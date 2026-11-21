@@ -1,0 +1,2202 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>自動排班神器 | 國軍對組 24H 智慧排班</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap');
+    body {
+      font-family: 'Inter', 'Noto Sans TC', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    .schedule-scroll::-webkit-scrollbar { height: 8px; width: 8px; }
+    .schedule-scroll::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+    .schedule-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+    .sticky-col { position: sticky; left: 0; z-index: 15; }
+    .sticky-corner { position: sticky; left: 0; top: 0; z-index: 25; }
+    .shift-cell { transition: transform 0.1s ease; user-select: none; }
+    .shift-cell:hover { transform: scale(1.06); z-index: 10; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-2.5">
+        <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm shrink-0">
+          <i data-lucide="calendar-check-2" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <h1 class="text-base sm:text-lg font-bold text-slate-900 leading-tight">自動排班神器</h1>
+          <p class="text-xs text-slate-500">A / M / B / G 各 1 人 · 24H (08:00-隔日08:00) · 休假前空班最高權重</p>
+        </div>
+      </div>
+
+      <!-- Month Switcher + Red Day Pill -->
+      <div class="flex items-center gap-2">
+        <div class="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+          <button id="btn-prev-month" type="button" class="p-1.5 rounded-md hover:bg-white text-slate-600 transition" title="上個月">
+            <i data-lucide="chevron-left" class="w-4 h-4"></i>
+          </button>
+          <span id="current-month-label" class="px-2 text-sm font-bold text-slate-800 min-w-[92px] text-center">2026年 12月</span>
+          <button id="btn-next-month" type="button" class="p-1.5 rounded-md hover:bg-white text-slate-600 transition" title="下個月">
+            <i data-lucide="chevron-right" class="w-4 h-4"></i>
+          </button>
+        </div>
+        <span id="red-day-badge" class="px-2.5 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold whitespace-nowrap">紅字 9 天</span>
+      </div>
+
+      <!-- Backup / Restore / Reset -->
+      <div class="flex items-center gap-1.5">
+        <button id="btn-open-backup" type="button" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold transition" title="下載備份檔或複製備份代碼">
+          <i data-lucide="save" class="w-3.5 h-3.5 text-indigo-600"></i>備份
+        </button>
+        <button id="btn-open-restore" type="button" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold transition" title="匯入備份檔或貼上備份代碼">
+          <i data-lucide="upload" class="w-3.5 h-3.5 text-emerald-600"></i>還原
+        </button>
+        <button id="btn-reset-default-roster" type="button" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white hover:bg-rose-50 border border-slate-200 text-slate-600 hover:text-rose-700 text-xs font-medium transition" title="還原預設10人名單">
+          <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>還原預設名單
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Toast Banner -->
+  <div id="toast-banner" class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 hidden max-w-md w-[92%] px-4 py-3 rounded-xl shadow-lg border text-xs font-semibold text-center transition-all"></div>
+
+  <!-- Main Workspace -->
+  <main class="flex-1 max-w-6xl w-full mx-auto px-4 py-5 space-y-5">
+
+    <!-- STEP 1: TWO-GROUP ROSTER -->
+    <section class="space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-base font-bold text-slate-900">1. 對組名單與班別資格</h2>
+          <p class="text-xs text-slate-500">點擊「名字」可設定<strong>受訓起訖日期</strong>、勾選班別資格或增減班；點擊「⇄ 換組」自由調動第一、二組。</p>
+        </div>
+        <form id="form-add-staff" class="flex items-center gap-1.5">
+          <input id="input-new-staff-name" type="text" placeholder="新增人員姓名..." class="px-3 py-1.5 text-xs sm:text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-32 sm:w-40 bg-white">
+          <button type="submit" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs sm:text-sm font-semibold transition whitespace-nowrap">
+            <i data-lucide="user-plus" class="w-3.5 h-3.5"></i>新增
+          </button>
+        </form>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Group 1 -->
+        <div class="bg-white rounded-2xl border border-indigo-200/80 shadow-xs overflow-hidden">
+          <div class="px-4 py-3 bg-indigo-50/80 border-b border-indigo-100 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-indigo-600"></span>
+              <h3 class="text-sm font-bold text-indigo-950">第一組（單週連休 4 天）</h3>
+            </div>
+            <span id="count-group-1" class="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-xs font-bold">5 人</span>
+          </div>
+          <div id="list-group-1" class="divide-y divide-slate-100"></div>
+        </div>
+
+        <!-- Group 2 -->
+        <div class="bg-white rounded-2xl border border-teal-200/80 shadow-xs overflow-hidden">
+          <div class="px-4 py-3 bg-teal-50/80 border-b border-teal-100 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-teal-600"></span>
+              <h3 class="text-sm font-bold text-teal-950">第二組（雙週連休 4 天）</h3>
+            </div>
+            <span id="count-group-2" class="px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 text-xs font-bold">5 人</span>
+          </div>
+          <div id="list-group-2" class="divide-y divide-slate-100"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 2: LEAVE CALENDAR -->
+    <section class="bg-white rounded-2xl border border-slate-200 p-4 space-y-3.5 shadow-xs">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm sm:text-base font-bold text-slate-900">2. 本月劃假表</h2>
+          <p class="text-xs text-slate-500">點擊格子劃假（「訓」為受訓期間自動鎖定不排班；琥珀圓點為休假前一日，系統以最高權重優先保留空班）。</p>
+        </div>
+        <button id="btn-toggle-leave-drawer" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition">
+          <i data-lucide="calendar-heart" class="w-3.5 h-3.5 text-rose-600"></i>
+          <span id="label-leave-drawer">收合劃假表</span>
+        </button>
+      </div>
+
+      <div id="leave-drawer" class="space-y-2.5">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span id="leave-tw-info" class="text-slate-600 font-medium"></span>
+          <div class="flex items-center gap-2">
+            <button id="btn-reset-biweekly-leaves" type="button" class="px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-semibold transition">重套一／二組隔週連休 4 天</button>
+            <button id="btn-clear-all-leaves" type="button" class="px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 font-medium transition">清空劃假</button>
+          </div>
+        </div>
+        <div class="overflow-x-auto schedule-scroll border border-slate-200 rounded-xl">
+          <table class="w-full border-collapse text-center text-xs">
+            <thead id="leave-thead"></thead>
+            <tbody id="leave-tbody"></tbody>
+            <tfoot id="leave-tfoot"></tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 3: GENERATE BUTTON -->
+    <section class="flex flex-col items-center justify-center py-1">
+      <button id="btn-generate" type="button" class="w-full sm:w-auto min-w-[260px] inline-flex items-center justify-center gap-2 px-8 py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] text-white text-base font-bold shadow-md shadow-indigo-200 transition">
+        <i data-lucide="sparkles" class="w-5 h-5"></i>
+        <span>一鍵生成本月班表</span>
+      </button>
+      <p class="text-[11px] text-slate-400 mt-1.5">休假前空班最高權重 ＋ 強制去休前化替換 ＋ B 班（外宿）全體優先均分 ＋ 少資格放寬連同班</p>
+    </section>
+
+    <!-- STEP 4: GENERATED SCHEDULE OUTPUT -->
+    <section id="schedule-output-section" class="hidden space-y-3 pt-1">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 id="schedule-output-title" class="text-base font-bold text-slate-900">本月排班總表</h2>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-100 text-sky-800 text-xs font-bold">A</span>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-xs font-bold">M</span>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-violet-100 text-violet-800 text-xs font-bold">B(外宿)</span>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-xs font-bold">G</span>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200 text-xs font-bold">休</span>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-orange-100 text-orange-800 border border-orange-200 text-xs font-bold">訓</span>
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-white text-amber-700 border-2 border-amber-400 text-xs font-bold">休前班</span>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="btn-regenerate" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold transition">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>重新洗牌
+          </button>
+          <button id="btn-export-csv" type="button" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition">
+            <i data-lucide="download" class="w-3.5 h-3.5"></i>匯出 Excel (CSV)
+          </button>
+        </div>
+      </div>
+
+      <div id="schedule-alert-banner" class="hidden rounded-xl border px-3.5 py-2.5 text-xs"></div>
+
+      <div class="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        <div class="px-4 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+          <span>💡 點擊總表中非受訓儲存格可手動循環微調班別（A → M → B → G → 休 → 空），右側統計會即時更新。</span>
+          <span id="summary-red-baseline" class="font-semibold text-slate-600"></span>
+        </div>
+        <div class="overflow-x-auto schedule-scroll">
+          <table class="w-full border-collapse text-center text-xs">
+            <thead id="schedule-thead"></thead>
+            <tbody id="schedule-tbody"></tbody>
+            <tfoot id="schedule-tfoot"></tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="max-w-6xl w-full mx-auto px-4 py-5 text-center text-[11px] text-slate-400">
+    自動排班神器 · 國軍對組 24H 智慧排班系統 · 雙重持久化儲存與備份代碼防護
+  </footer>
+
+  <!-- EDIT STAFF MODAL -->
+  <div id="staff-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-xl w-full max-w-md overflow-hidden">
+      <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <h3 class="text-sm font-bold text-slate-900">編輯人員設定與受訓期間</h3>
+        <button id="btn-close-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 transition">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4 text-xs">
+        <div class="grid grid-cols-3 gap-3">
+          <div class="col-span-2">
+            <label class="block font-bold text-slate-700 mb-1">人員姓名</label>
+            <input id="modal-staff-name" type="text" class="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500">
+          </div>
+          <div>
+            <label class="block font-bold text-slate-700 mb-1">所屬組別</label>
+            <select id="modal-staff-group" class="w-full px-2.5 py-2 border border-slate-300 rounded-lg text-sm font-semibold bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+              <option value="1">第一組</option>
+              <option value="2">第二組</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-bold text-slate-700 mb-1.5">可值班別資格（至少勾選 1 項）</label>
+          <div class="grid grid-cols-4 gap-2" id="modal-roles-container">
+            <label class="flex items-center justify-center gap-1.5 p-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-sky-50">
+              <input type="checkbox" value="A" class="modal-role-cb accent-sky-600">
+              <span class="font-bold text-sky-800">A 班</span>
+            </label>
+            <label class="flex items-center justify-center gap-1.5 p-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-amber-50">
+              <input type="checkbox" value="M" class="modal-role-cb accent-amber-600">
+              <span class="font-bold text-amber-800">M 班</span>
+            </label>
+            <label class="flex items-center justify-center gap-1.5 p-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-violet-50">
+              <input type="checkbox" value="B" class="modal-role-cb accent-violet-600">
+              <span class="font-bold text-violet-800">B 外宿</span>
+            </label>
+            <label class="flex items-center justify-center gap-1.5 p-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-emerald-50">
+              <input type="checkbox" value="G" class="modal-role-cb accent-emerald-600">
+              <span class="font-bold text-emerald-800">G 班</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Training Date Range -->
+        <div class="p-3.5 rounded-xl bg-orange-50/70 border border-orange-200 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <label class="inline-flex items-center gap-2 font-bold text-orange-950 cursor-pointer">
+              <input id="modal-training-enabled" type="checkbox" class="w-4 h-4 accent-orange-600 rounded">
+              <span>設定受訓期間（期間鎖定不排班）</span>
+            </label>
+            <button id="btn-clear-training" type="button" class="text-[11px] text-orange-700 hover:underline font-semibold">清除受訓</button>
+          </div>
+
+          <div id="modal-training-fields" class="space-y-2.5">
+            <div class="grid grid-cols-2 gap-2.5">
+              <div>
+                <label class="block text-[11px] font-semibold text-orange-900 mb-1">受訓起始日</label>
+                <input id="modal-training-start" type="date" class="w-full px-2.5 py-1.5 border border-orange-300 rounded-lg bg-white text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-orange-500">
+              </div>
+              <div>
+                <label class="block text-[11px] font-semibold text-orange-900 mb-1">受訓結束日</label>
+                <input id="modal-training-end" type="date" class="w-full px-2.5 py-1.5 border border-orange-300 rounded-lg bg-white text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-orange-500">
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span class="text-[11px] text-orange-800">快速天數：</span>
+              <button type="button" data-train-days="1" class="btn-quick-train px-2 py-0.5 rounded bg-white border border-orange-300 text-orange-800 hover:bg-orange-100 text-[11px] font-semibold">單日</button>
+              <button type="button" data-train-days="5" class="btn-quick-train px-2 py-0.5 rounded bg-white border border-orange-300 text-orange-800 hover:bg-orange-100 text-[11px] font-semibold">5 天</button>
+              <button type="button" data-train-days="7" class="btn-quick-train px-2 py-0.5 rounded bg-white border border-orange-300 text-orange-800 hover:bg-orange-100 text-[11px] font-semibold">7 天</button>
+              <button type="button" data-train-days="14" class="btn-quick-train px-2 py-0.5 rounded bg-white border border-orange-300 text-orange-800 hover:bg-orange-100 text-[11px] font-semibold">14 天</button>
+            </div>
+            <p class="text-[11px] text-orange-800/90 leading-relaxed">※ 若僅填起始日而未填結束日，系統預設為單日受訓；受訓期間內格子顯示「訓」且絕對不會指派任何班別。</p>
+          </div>
+        </div>
+
+        <!-- Manual Shift Adjustment -->
+        <div class="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-200">
+          <div>
+            <p class="font-bold text-slate-800">手動增減目標班數</p>
+            <p class="text-[11px] text-slate-500">正數多排、負數少排（預設 0）</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="btn-adj-minus" type="button" class="w-7 h-7 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 font-bold text-slate-700">-</button>
+            <span id="modal-staff-adj" class="w-8 text-center font-bold text-sm text-indigo-700">0</span>
+            <button id="btn-adj-plus" type="button" class="w-7 h-7 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 font-bold text-slate-700">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="px-5 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+        <button id="btn-delete-staff" type="button" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-rose-600 hover:bg-rose-50 font-semibold text-xs transition">
+          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>刪除人員
+        </button>
+        <div class="flex items-center gap-2">
+          <button id="btn-cancel-modal" type="button" class="px-3.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs transition">取消</button>
+          <button id="btn-save-modal" type="button" class="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition">儲存變更</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DUAL-CHANNEL BACKUP MODAL -->
+  <div id="backup-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-xl w-full max-w-md overflow-hidden">
+      <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <h3 class="text-sm font-bold text-slate-900">雙重備份（下載檔案 ＋ 複製備份代碼）</h3>
+        <button id="btn-close-backup" type="button" class="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 transition">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="p-5 space-y-4 text-xs">
+        <div class="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-2">
+          <p class="font-bold text-indigo-950">方式 A：下載 .json 備份檔案</p>
+          <p class="text-[11px] text-indigo-800">將完整名單、受訓日期、劃假與已排班表存成檔案。</p>
+          <button id="btn-download-json-file" type="button" class="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition">
+            <i data-lucide="download" class="w-4 h-4"></i>下載備份檔案 (.json)
+          </button>
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+          <div class="flex items-center justify-between">
+            <p class="font-bold text-slate-800">方式 B：複製純文字備份代碼（推薦手機使用）</p>
+            <button id="btn-copy-backup-code" type="button" class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-[11px] font-bold transition">
+              <i data-lucide="copy" class="w-3 h-3"></i>一鍵複製代碼
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-500">若預覽視窗阻擋檔案下載，請點「一鍵複製代碼」貼到記事本或 LINE 保存，下次打開點「還原」貼上即可！</p>
+          <textarea id="textarea-backup-code" readonly rows="4" class="w-full p-2.5 rounded-lg border border-slate-300 bg-white font-mono text-[11px] text-slate-700 focus:outline-none select-all"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DUAL-CHANNEL RESTORE MODAL -->
+  <div id="restore-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-xl w-full max-w-md overflow-hidden">
+      <div class="px-5 py-3.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <h3 class="text-sm font-bold text-slate-900">雙通道還原資料</h3>
+        <button id="btn-close-restore" type="button" class="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 transition">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="p-5 space-y-4 text-xs">
+        <div class="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-2">
+          <p class="font-bold text-emerald-950">通道 A：選擇先前下載的 .json 備份檔</p>
+          <button id="btn-pick-json-file" type="button" class="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition">
+            <i data-lucide="folder-open" class="w-4 h-4"></i>選擇 .json 備份檔案匯入
+          </button>
+          <input id="input-restore-json" type="file" accept=".json,application/json,text/plain,*/*" class="hidden">
+        </div>
+
+        <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+          <p class="font-bold text-slate-800">通道 B：直接貼上備份代碼（或 .json 檔案內容）</p>
+          <textarea id="textarea-restore-code" rows="4" placeholder="請在此貼上備份代碼（或用記事本打開 .json 檔全選貼上）..." class="w-full p-2.5 rounded-lg border border-slate-300 bg-white font-mono text-[11px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"></textarea>
+          <button id="btn-apply-restore-code" type="button" class="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition">
+            <i data-lucide="check-circle-2" class="w-4 h-4"></i>立即還原貼上的資料
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      // Permanent Master Storage Key + Window.name Dual Persistence
+      const MASTER_STORAGE_KEY = 'duty_scheduler_master_db';
+      const WINDOW_NAME_PREFIX = 'DUTY_SCHEDULER_DB::';
+      const LEGACY_STORAGE_KEYS = [
+        'duty_scheduler_master_db',
+        'duty_scheduler_final_v1',
+        'duty_scheduler_v4',
+        'duty_scheduler_v3',
+        'duty_scheduler_v2',
+        'duty_scheduler_v1',
+        'army_duty_scheduler_v1',
+        'duty_roster_backup'
+      ];
+
+      const ROLES = ['A', 'M', 'B', 'G'];
+      const WEEKDAY_NAMES = ['日', '一', '二', '三', '四', '五', '六'];
+
+      // Taiwan Public Holidays (2025-2027)
+      const TW_HOLIDAYS = {
+        '2025-01-01': '元旦',
+        '2025-01-27': '小年夜彈性', '2025-01-28': '除夕', '2025-01-29': '春節', '2025-01-30': '春節', '2025-01-31': '春節',
+        '2025-02-28': '和平紀念日',
+        '2025-04-03': '兒童節補假', '2025-04-04': '清明節',
+        '2025-05-30': '端午節補假', '2025-05-31': '端午節',
+        '2025-10-06': '中秋節', '2025-10-10': '國慶日',
+        '2026-01-01': '元旦',
+        '2026-02-16': '除夕', '2026-02-17': '春節', '2026-02-18': '春節', '2026-02-19': '春節', '2026-02-20': '春節彈性',
+        '2026-02-27': '和平紀念日補假', '2026-02-28': '和平紀念日',
+        '2026-04-03': '兒童節補假', '2026-04-04': '兒童節', '2026-04-05': '清明節', '2026-04-06': '清明節補假',
+        '2026-05-01': '勞動節',
+        '2026-06-19': '端午節',
+        '2026-09-25': '中秋節', '2026-09-28': '教師節',
+        '2026-10-09': '國慶日補假', '2026-10-10': '國慶日', '2026-10-25': '光復節', '2026-10-26': '光復節補假',
+        '2026-12-25': '行憲紀念日',
+        '2027-01-01': '元旦',
+        '2027-02-05': '除夕', '2027-02-06': '春節', '2027-02-07': '春節', '2027-02-08': '春節補假', '2027-02-09': '春節補假',
+        '2027-02-28': '和平紀念日', '2027-03-01': '和平紀念日補假',
+        '2027-04-04': '兒童節', '2027-04-05': '清明節',
+        '2027-05-01': '勞動節',
+        '2027-06-09': '端午節',
+        '2027-09-15': '中秋節', '2027-09-28': '教師節',
+        '2027-10-10': '國慶日', '2027-10-11': '國慶日補假', '2027-10-25': '光復節',
+        '2027-12-25': '行憲紀念日'
+      };
+
+      function createDefaultRoster() {
+        return [
+          { id: 's1', name: '曾少岑', group: 1, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's2', name: '何筱雯', group: 1, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's3', name: '曾廣誠', group: 1, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's4', name: '林啟翔', group: 1, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's5', name: '徐麗萍', group: 1, roles: ['B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's6', name: '蔡旻軒', group: 2, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's7', name: '林頂立', group: 2, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's8', name: '邱姵穎', group: 2, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's9', name: '陳益暄', group: 2, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' },
+          { id: 's10', name: '鄭家禾', group: 2, roles: ['A', 'M', 'B', 'G'], adj: 0, trainStart: '', trainEnd: '' }
+        ];
+      }
+
+      let state = {
+        year: 2026,
+        month: 12,
+        roster: createDefaultRoster(),
+        leavesByMonth: {},
+        scheduleByMonth: {},
+        leaveDrawerOpen: true,
+        editingStaffId: null
+      };
+
+      function pad2(n) { return String(n).padStart(2, '0'); }
+      function ymKey(y, m) { return `${y}-${pad2(m)}`; }
+      function dateStr(y, m, d) { return `${y}-${pad2(m)}-${pad2(d)}`; }
+      function getDaysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
+
+      let toastTimer = null;
+      function showToast(message, type = 'success') {
+        const el = document.getElementById('toast-banner');
+        if (!el) return;
+        const styles = {
+          success: 'bg-emerald-900/95 text-white border-emerald-700',
+          error: 'bg-rose-900/95 text-white border-rose-700',
+          info: 'bg-slate-900/95 text-white border-slate-700'
+        };
+        el.className = `fixed bottom-5 left-1/2 -translate-x-1/2 z-50 max-w-md w-[92%] px-4 py-3 rounded-xl shadow-lg border text-xs font-semibold text-center transition-all ${styles[type] || styles.info}`;
+        el.textContent = message;
+        el.classList.remove('hidden');
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          el.classList.add('hidden');
+        }, 4200);
+      }
+
+      function isRedDay(y, m, d) {
+        const ds = dateStr(y, m, d);
+        if (TW_HOLIDAYS[ds]) return true;
+        const dow = new Date(y, m - 1, d).getDay();
+        return dow === 0 || dow === 6;
+      }
+
+      function getHolidayName(y, m, d) {
+        return TW_HOLIDAYS[dateStr(y, m, d)] || '';
+      }
+
+      function isStaffTrainingOnDate(staff, ds) {
+        if (!staff.trainStart) return false;
+        const start = staff.trainStart;
+        const end = staff.trainEnd || staff.trainStart;
+        return ds >= start && ds <= end;
+      }
+
+      // Normalize any backup or legacy schema into current clean structure
+      function normalizeStaffItem(s, idx) {
+        const rawRoles = Array.isArray(s.roles)
+          ? s.roles
+          : (Array.isArray(s.allowedRoles) ? s.allowedRoles : (Array.isArray(s.shifts) ? s.shifts : ['A', 'M', 'B', 'G']));
+        const validRoles = ROLES.filter(r => rawRoles.map(x => String(x).toUpperCase()).includes(r));
+        const grpRaw = s.group !== undefined ? s.group : (s.team !== undefined ? s.team : (idx < 5 ? 1 : 2));
+        const grp = (Number(grpRaw) === 2 || String(grpRaw).includes('2') || String(grpRaw).includes('二')) ? 2 : 1;
+        const ts = s.trainStart || s.trainingStart || s.trainFrom || '';
+        const te = s.trainEnd || s.trainingEnd || s.trainTo || (ts ? ts : '');
+
+        return {
+          id: String(s.id || s.staffId || ('s_' + idx + '_' + Math.random().toString(36).slice(2, 6))),
+          name: String(s.name || s.staffName || `人員${idx + 1}`).trim(),
+          group: grp,
+          roles: validRoles.length > 0 ? validRoles : ['A', 'M', 'B', 'G'],
+          adj: Number(s.adj !== undefined ? s.adj : (s.adjust || 0)) || 0,
+          trainStart: ts,
+          trainEnd: te
+        };
+      }
+
+      function normalizeLeavesMap(rawLeaves, normalizedRoster, fallbackYm) {
+        const result = {};
+        if (!rawLeaves || typeof rawLeaves !== 'object') return result;
+
+        const nameToId = {};
+        normalizedRoster.forEach(s => { nameToId[s.name] = s.id; });
+        const validIds = new Set(normalizedRoster.map(s => s.id));
+
+        const keys = Object.keys(rawLeaves);
+        const looksLikeMonthMap = keys.some(k => /^\d{4}-\d{1,2}$/.test(k));
+
+        function parseMonthLeavesObj(monthObj) {
+          const out = {};
+          normalizedRoster.forEach(s => { out[s.id] = []; });
+          if (!monthObj || typeof monthObj !== 'object') return out;
+          Object.keys(monthObj).forEach(k => {
+            const targetId = validIds.has(k) ? k : (nameToId[k] || null);
+            if (!targetId) return;
+            const arr = Array.isArray(monthObj[k]) ? monthObj[k] : [];
+            out[targetId] = arr.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 31).sort((a, b) => a - b);
+          });
+          return out;
+        }
+
+        if (looksLikeMonthMap) {
+          keys.forEach(ym => {
+            const parts = ym.split('-');
+            const normYm = `${parts[0]}-${pad2(Number(parts[1]))}`;
+            result[normYm] = parseMonthLeavesObj(rawLeaves[ym]);
+          });
+        } else {
+          result[fallbackYm] = parseMonthLeavesObj(rawLeaves);
+        }
+        return result;
+      }
+
+      function normalizeScheduleMap(rawSched, normalizedRoster, fallbackYm) {
+        const result = {};
+        if (!rawSched || typeof rawSched !== 'object') return result;
+
+        const nameToId = {};
+        normalizedRoster.forEach(s => { nameToId[s.name] = s.id; });
+        const validIds = new Set(normalizedRoster.map(s => s.id));
+
+        const keys = Object.keys(rawSched);
+        const looksLikeMonthMap = keys.some(k => /^\d{4}-\d{1,2}$/.test(k));
+
+        function parseMonthSchedObj(monthObj) {
+          const out = {};
+          if (!monthObj || typeof monthObj !== 'object') return out;
+          Object.keys(monthObj).forEach(k => {
+            const targetId = validIds.has(k) ? k : (nameToId[k] || null);
+            if (!targetId) return;
+            const row = monthObj[k];
+            if (Array.isArray(row)) {
+              const dayObj = {};
+              row.forEach((val, idx) => {
+                if (idx >= 1 && val) dayObj[idx] = String(val);
+              });
+              out[targetId] = dayObj;
+            } else if (row && typeof row === 'object') {
+              out[targetId] = { ...row };
+            }
+          });
+          return out;
+        }
+
+        if (looksLikeMonthMap) {
+          keys.forEach(ym => {
+            const parts = ym.split('-');
+            const normYm = `${parts[0]}-${pad2(Number(parts[1]))}`;
+            result[normYm] = parseMonthSchedObj(rawSched[ym]);
+          });
+        } else {
+          result[fallbackYm] = parseMonthSchedObj(rawSched);
+        }
+        return result;
+      }
+
+      function parseAndApplyBackupObject(rawObj) {
+        if (!rawObj || typeof rawObj !== 'object') return null;
+        const root = (rawObj.data && typeof rawObj.data === 'object' && !Array.isArray(rawObj.data))
+          ? rawObj.data
+          : ((rawObj.state && typeof rawObj.state === 'object') ? rawObj.state : rawObj);
+
+        const rawRoster = Array.isArray(root)
+          ? root
+          : (root.roster || root.staff || root.staffList || root.members || root.people || root.list);
+
+        if (!Array.isArray(rawRoster) || rawRoster.length === 0) {
+          return null;
+        }
+
+        const parsedYear = Number(root.year || rawObj.year) || state.year;
+        const parsedMonth = Number(root.month || rawObj.month) || state.month;
+        const fallbackYm = ymKey(parsedYear, parsedMonth);
+
+        const normalizedRoster = rawRoster.map((s, idx) => normalizeStaffItem(s, idx));
+        const rawLeaves = root.leavesByMonth || root.leaves || root.leaveMap || rawObj.leavesByMonth || rawObj.leaves || {};
+        const rawSched = root.scheduleByMonth || root.schedules || root.schedule || rawObj.scheduleByMonth || rawObj.schedules || {};
+
+        return {
+          year: parsedYear,
+          month: parsedMonth,
+          roster: normalizedRoster,
+          leavesByMonth: normalizeLeavesMap(rawLeaves, normalizedRoster, fallbackYm),
+          scheduleByMonth: normalizeScheduleMap(rawSched, normalizedRoster, fallbackYm)
+        };
+      }
+
+      function getSerializablePayload() {
+        return {
+          version: 'master_v1',
+          savedAt: new Date().toISOString(),
+          year: state.year,
+          month: state.month,
+          roster: state.roster,
+          leavesByMonth: state.leavesByMonth,
+          scheduleByMonth: state.scheduleByMonth
+        };
+      }
+
+      // Dual-layer persistence: localStorage (permanent master key) + window.name
+      function saveState() {
+        const jsonStr = JSON.stringify(getSerializablePayload());
+        try {
+          localStorage.setItem(MASTER_STORAGE_KEY, jsonStr);
+        } catch (e) {}
+        try {
+          window.name = WINDOW_NAME_PREFIX + jsonStr;
+        } catch (e) {}
+      }
+
+      // Auto-rescue from master key, window.name, or any legacy localStorage key
+      function loadState() {
+        let candidateRaw = null;
+        let rescuedFromLegacy = false;
+
+        // 1. Check permanent master key in localStorage
+        try {
+          const masterRaw = localStorage.getItem(MASTER_STORAGE_KEY);
+          if (masterRaw) candidateRaw = masterRaw;
+        } catch (e) {}
+
+        // 2. Check window.name backup (survives iframe reloads)
+        if (!candidateRaw) {
+          try {
+            if (typeof window.name === 'string' && window.name.startsWith(WINDOW_NAME_PREFIX)) {
+              candidateRaw = window.name.slice(WINDOW_NAME_PREFIX.length);
+              rescuedFromLegacy = true;
+            }
+          } catch (e) {}
+        }
+
+        // 3. Scan all known legacy keys + any localStorage key containing "duty" or "schedule"
+        if (!candidateRaw) {
+          try {
+            for (const k of LEGACY_STORAGE_KEYS) {
+              const v = localStorage.getItem(k);
+              if (v) {
+                candidateRaw = v;
+                rescuedFromLegacy = true;
+                break;
+              }
+            }
+            if (!candidateRaw && typeof localStorage !== 'undefined') {
+              for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                if (k && (k.includes('duty') || k.includes('sched') || k.includes('roster'))) {
+                  const v = localStorage.getItem(k);
+                  if (v && v.includes('roster')) {
+                    candidateRaw = v;
+                    rescuedFromLegacy = true;
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (e) {}
+        }
+
+        if (!candidateRaw) return;
+
+        try {
+          const parsed = JSON.parse(candidateRaw);
+          const applied = parseAndApplyBackupObject(parsed);
+          if (applied) {
+            state.year = applied.year;
+            state.month = applied.month;
+            state.roster = applied.roster;
+            state.leavesByMonth = applied.leavesByMonth;
+            state.scheduleByMonth = applied.scheduleByMonth;
+            saveState();
+            if (rescuedFromLegacy) {
+              setTimeout(() => showToast('✅ 已自動從歷史儲存空間救援並遷移您的名單與設定！', 'success'), 300);
+            }
+          }
+        } catch (e) {}
+      }
+
+      // Compute Monday-based week blocks inside the month
+      function getMonthWeeks(y, m) {
+        const days = getDaysInMonth(y, m);
+        const weeks = [];
+        let cur = null;
+        for (let d = 1; d <= days; d++) {
+          const dow = new Date(y, m - 1, d).getDay();
+          if (!cur || dow === 1) {
+            cur = { index: weeks.length + 1, startDay: d, endDay: d, days: [] };
+            weeks.push(cur);
+          }
+          cur.endDay = d;
+          cur.days.push(d);
+        }
+        return weeks;
+      }
+
+      // Default bi-weekly 4-day consecutive leave pattern for Group 1 & Group 2
+      function generateDefaultBiweeklyLeaves(y, m) {
+        const days = getDaysInMonth(y, m);
+        const leaves = {};
+        state.roster.forEach(s => { leaves[s.id] = []; });
+
+        let redCount = 0;
+        for (let d = 1; d <= days; d++) {
+          if (isRedDay(y, m, d)) redCount++;
+        }
+
+        const weeks = getMonthWeeks(y, m);
+        weeks.forEach((w, wIdx) => {
+          const isOddWeek = (wIdx % 2 === 0);
+          const targetGroup = isOddWeek ? 1 : 2;
+          const blockDays = [];
+          w.days.forEach(d => {
+            const dow = new Date(y, m - 1, d).getDay();
+            if (dow === 5 || dow === 6 || dow === 0) blockDays.push(d);
+          });
+          const lastBlockDay = blockDays[blockDays.length - 1];
+          if (lastBlockDay && lastBlockDay + 1 <= days && blockDays.length < 4) {
+            blockDays.push(lastBlockDay + 1);
+          }
+          if (wIdx === 0 && blockDays.length < 3) {
+            w.days.slice(0, Math.min(3, w.days.length)).forEach(d => {
+              if (!blockDays.includes(d)) blockDays.push(d);
+            });
+          }
+
+          state.roster.forEach(s => {
+            if (s.group === targetGroup) {
+              blockDays.forEach(d => {
+                const ds = dateStr(y, m, d);
+                if (!isStaffTrainingOnDate(s, ds) && leaves[s.id].length < redCount) {
+                  if (!leaves[s.id].includes(d)) leaves[s.id].push(d);
+                }
+              });
+            }
+          });
+        });
+
+        Object.keys(leaves).forEach(id => leaves[id].sort((a, b) => a - b));
+        return leaves;
+      }
+
+      function ensureMonthData(y, m) {
+        const key = ymKey(y, m);
+        if (!state.leavesByMonth[key]) {
+          state.leavesByMonth[key] = generateDefaultBiweeklyLeaves(y, m);
+        } else {
+          state.roster.forEach(s => {
+            if (!Array.isArray(state.leavesByMonth[key][s.id])) {
+              state.leavesByMonth[key][s.id] = [];
+            }
+          });
+        }
+      }
+
+      // Check if day `d` is immediately BEFORE a leave day for staff `s`
+      function isPreLeaveDay(staffId, y, m, d, leavesMap) {
+        const days = getDaysInMonth(y, m);
+        if (d < days) {
+          const nextLeaves = leavesMap[staffId] || [];
+          return nextLeaves.includes(d + 1);
+        }
+        const ny = m === 12 ? y + 1 : y;
+        const nm = m === 12 ? 1 : m + 1;
+        const nKey = ymKey(ny, nm);
+        if (state.leavesByMonth[nKey] && Array.isArray(state.leavesByMonth[nKey][staffId])) {
+          return state.leavesByMonth[nKey][staffId].includes(1);
+        }
+        return false;
+      }
+
+      // =========================================================================
+      // CORE SCHEDULER ALGORITHM:
+      // 1. BFS Multi-Day Augmenting Path Matching (up to 5 layers across days & roles)
+      // 2. Guaranteed 100% Full-Shift Fallback: When consecutive leave + training leaves
+      //    < 4 non-consecutive staff on a day, automatically relaxes consecutive-day
+      //    constraint (preferring prior-night B-shift overnight off) so ZERO shifts are missing!
+      // 3. Tier 1: Pre-Leave Empty Day Highest Priority (with B-shift preference if forced)
+      // 4. Tier 2: B-shift Equalization + Fair Total/Red Shifts + Relaxed Repeat for <=2 Roles
+      // =========================================================================
+      function runSmartScheduler() {
+        const y = state.year;
+        const m = state.month;
+        const key = ymKey(y, m);
+        ensureMonthData(y, m);
+
+        const days = getDaysInMonth(y, m);
+        const staffList = state.roster.slice();
+        const leavesMap = state.leavesByMonth[key];
+
+        const effectiveLeaves = {};
+        staffList.forEach(s => {
+          effectiveLeaves[s.id] = new Set(leavesMap[s.id] || []);
+        });
+
+        const N = staffList.length;
+        const isOff = Array.from({ length: N }, () => Array(days + 2).fill(false));
+        const isTrain = Array.from({ length: N }, () => Array(days + 2).fill(false));
+        const isPreLeave = Array.from({ length: N }, () => Array(days + 2).fill(false));
+        const isRed = Array(days + 2).fill(false);
+
+        for (let d = 1; d <= days; d++) {
+          isRed[d] = isRedDay(y, m, d);
+          const ds = dateStr(y, m, d);
+          for (let i = 0; i < N; i++) {
+            const s = staffList[i];
+            if (isStaffTrainingOnDate(s, ds)) {
+              isTrain[i][d] = true;
+            } else if (effectiveLeaves[s.id].has(d)) {
+              isOff[i][d] = true;
+            }
+          }
+        }
+
+        const effLeavesArrMap = {};
+        staffList.forEach(s => {
+          effLeavesArrMap[s.id] = Array.from(effectiveLeaves[s.id]);
+        });
+        for (let d = 1; d <= days; d++) {
+          for (let i = 0; i < N; i++) {
+            if (!isTrain[i][d] && !isOff[i][d]) {
+              isPreLeave[i][d] = isPreLeaveDay(staffList[i].id, y, m, d, effLeavesArrMap);
+            }
+          }
+        }
+
+        const availDays = staffList.map((s, i) => {
+          let cnt = 0;
+          for (let d = 1; d <= days; d++) {
+            if (!isTrain[i][d] && !isOff[i][d]) cnt++;
+          }
+          return cnt;
+        });
+
+        const totalRequiredShifts = days * 4;
+        const totalAvailDays = availDays.reduce((a, b) => a + b, 0) || 1;
+        const targetTotal = staffList.map((s, i) => {
+          if (availDays[i] === 0) return 0;
+          return Math.max(0, (totalRequiredShifts * (availDays[i] / totalAvailDays)) + (s.adj || 0));
+        });
+
+        const bQualAvailSum = staffList.reduce((acc, s, i) => acc + (s.roles.includes('B') ? availDays[i] : 0), 0) || 1;
+        const targetB = staffList.map((s, i) => {
+          if (!s.roles.includes('B') || availDays[i] === 0) return 0;
+          return days * (availDays[i] / bQualAvailSum);
+        });
+
+        let totalRedDays = 0;
+        for (let d = 1; d <= days; d++) if (isRed[d]) totalRedDays++;
+        const totalRedShifts = totalRedDays * 4;
+        const targetRed = staffList.map((s, i) => {
+          if (availDays[i] === 0) return 0;
+          return totalRedShifts * (availDays[i] / totalAvailDays);
+        });
+
+        function canWork(i, d, role, grid, allowConsecutive = false) {
+          if (isTrain[i][d] || isOff[i][d]) return false;
+          if (!staffList[i].roles.includes(role)) return false;
+          if (grid[i][d] !== '') return false;
+          if (!allowConsecutive) {
+            if (d > 1 && ROLES.includes(grid[i][d - 1])) return false;
+            if (d < days && ROLES.includes(grid[i][d + 1])) return false;
+          }
+          return true;
+        }
+
+        function isPersonFreeOnDay(i, d, grid) {
+          if (isTrain[i][d] || isOff[i][d]) return false;
+          if (grid[i][d] !== '') return false;
+          if (d > 1 && ROLES.includes(grid[i][d - 1])) return false;
+          if (d < days && ROLES.includes(grid[i][d + 1])) return false;
+          return true;
+        }
+
+        // BFS Multi-Day Augmenting Path Matching (up to 5 layers across same-day roles & adjacent days)
+        function findAugmentingPathAndApply(startDay, startRole, grid, scorerFn) {
+          // Each queue state represents an open slot (day, role) that needs a qualified person,
+          // plus a chain of pending moves [{ person, toDay, toRole, fromDay, fromRole }]
+          const queue = [{ day: startDay, role: startRole, moves: [], usedSlots: new Set([`${startDay}:${startRole}`]) }];
+          let bestPath = null;
+          let bestPathScore = Infinity;
+
+          while (queue.length > 0) {
+            const cur = queue.shift();
+            if (cur.moves.length >= 4) continue;
+
+            // Build temporary view of grid after applying cur.moves (vacating fromDay)
+            const getCell = (p, d) => {
+              for (let mIdx = cur.moves.length - 1; mIdx >= 0; mIdx--) {
+                const mv = cur.moves[mIdx];
+                if (mv.person === p && mv.toDay === d) return mv.toRole;
+                if (mv.person === p && mv.fromDay === d) return '';
+              }
+              return grid[p][d];
+            };
+
+            const isTempFree = (p, d) => {
+              if (isTrain[p][d] || isOff[p][d]) return false;
+              if (getCell(p, d) !== '') return false;
+              if (d > 1 && ROLES.includes(getCell(p, d - 1))) return false;
+              if (d < days && ROLES.includes(getCell(p, d + 1))) return false;
+              return true;
+            };
+
+            // Option A: Direct free person `p` on `cur.day` can fill `(cur.day, cur.role)`
+            for (let p = 0; p < N; p++) {
+              if (!staffList[p].roles.includes(cur.role)) continue;
+              if (isTempFree(p, cur.day)) {
+                const finalMoves = [...cur.moves, { person: p, toDay: cur.day, toRole: cur.role, fromDay: 0, fromRole: '' }];
+                let totalScore = finalMoves.length * 25;
+                finalMoves.forEach(mv => {
+                  totalScore += scorerFn(mv.person, mv.toDay, mv.toRole, grid);
+                });
+                if (totalScore < bestPathScore) {
+                  bestPathScore = totalScore;
+                  bestPath = finalMoves;
+                }
+              }
+            }
+
+            if (bestPath && cur.moves.length >= 2) continue;
+
+            // Option B: Displace someone `p` currently holding another role on `cur.day`
+            for (let p = 0; p < N; p++) {
+              if (!staffList[p].roles.includes(cur.role)) continue;
+              const heldRole = getCell(p, cur.day);
+              if (!ROLES.includes(heldRole) || heldRole === cur.role) continue;
+              const slotKey = `${cur.day}:${heldRole}`;
+              if (cur.usedSlots.has(slotKey)) continue;
+
+              const nextUsed = new Set(cur.usedSlots);
+              nextUsed.add(slotKey);
+              queue.push({
+                day: cur.day,
+                role: heldRole,
+                moves: [...cur.moves, { person: p, toDay: cur.day, toRole: cur.role, fromDay: cur.day, fromRole: heldRole }],
+                usedSlots: nextUsed
+              });
+            }
+
+            // Option C: Unblock `p` who is free on `cur.day` EXCEPT for working `adjD` (cur.day - 1 or cur.day + 1)
+            for (const adjD of [cur.day - 1, cur.day + 1]) {
+              if (adjD < 1 || adjD > days) continue;
+              for (let p = 0; p < N; p++) {
+                if (isTrain[p][cur.day] || isOff[p][cur.day]) continue;
+                if (!staffList[p].roles.includes(cur.role)) continue;
+                if (getCell(p, cur.day) !== '') continue;
+                const heldAdjRole = getCell(p, adjD);
+                if (!ROLES.includes(heldAdjRole)) continue;
+                const otherAdj = adjD === cur.day - 1 ? cur.day + 1 : cur.day - 1;
+                if (otherAdj >= 1 && otherAdj <= days && ROLES.includes(getCell(p, otherAdj))) continue;
+
+                const slotKey = `${adjD}:${heldAdjRole}`;
+                if (cur.usedSlots.has(slotKey)) continue;
+
+                const nextUsed = new Set(cur.usedSlots);
+                nextUsed.add(slotKey);
+                queue.push({
+                  day: adjD,
+                  role: heldAdjRole,
+                  moves: [...cur.moves, { person: p, toDay: cur.day, toRole: cur.role, fromDay: adjD, fromRole: heldAdjRole }],
+                  usedSlots: nextUsed
+                });
+              }
+            }
+          }
+
+          if (bestPath) {
+            // Apply moves in reverse order so vacated slots open cleanly
+            for (let idx = bestPath.length - 1; idx >= 0; idx--) {
+              const mv = bestPath[idx];
+              if (mv.fromDay > 0) grid[mv.person][mv.fromDay] = '';
+              grid[mv.person][mv.toDay] = mv.toRole;
+            }
+            return true;
+          }
+          return false;
+        }
+
+        // Guaranteed Full-Shift Fallback: If non-consecutive staff are mathematically < 4 on day `d`
+        // (e.g. entire group on 4-day consecutive leave + 1 training = only 4 staff left on base for 4 days),
+        // relax consecutive-day constraint to guarantee 100% full A/M/B/G coverage!
+        function forceFillWithFallback(d, role, grid, scorerFn) {
+          // First try relaxing consecutive-day for direct candidates (preferring prior-night B-shift overnight off)
+          const fallbackCands = [];
+          for (let i = 0; i < N; i++) {
+            if (canWork(i, d, role, grid, true)) {
+              const prevRole = d > 1 ? grid[i][d - 1] : '';
+              const nextRole = d < days ? grid[i][d + 1] : '';
+              const isConsec = ROLES.includes(prevRole) || ROLES.includes(nextRole);
+              // Prefer staff who had B-shift (overnight off) if consecutive shift is mathematically unavoidable
+              const bRestBonus = (prevRole === 'B') ? -40 : 0;
+              const consecPen = isConsec ? 500000 : 0;
+              fallbackCands.push({ i, score: consecPen + bRestBonus + scorerFn(i, d, role, grid) });
+            }
+          }
+          if (fallbackCands.length > 0) {
+            fallbackCands.sort((a, b) => a.score - b.score);
+            grid[fallbackCands[0].i][d] = role;
+            return true;
+          }
+
+          // Second try same-day role swap with fallback candidates
+          for (let k = 0; k < N; k++) {
+            const roleK = grid[k][d];
+            if (!ROLES.includes(roleK) || !staffList[k].roles.includes(role)) continue;
+            for (let j = 0; j < N; j++) {
+              if (j === k) continue;
+              if (canWork(j, d, roleK, grid, true)) {
+                grid[j][d] = roleK;
+                grid[k][d] = role;
+                return true;
+              }
+            }
+          }
+          return false;
+        }
+
+        // Mandatory Hole-Filling Repair: scans entire month and guarantees every day has A, M, B, G
+        function fillAllMissingHoles(grid, scorerFn) {
+          for (let pass = 0; pass < 4; pass++) {
+            let anyMissing = false;
+            for (let d = 1; d <= days; d++) {
+              const present = new Set();
+              for (let i = 0; i < N; i++) {
+                if (ROLES.includes(grid[i][d])) present.add(grid[i][d]);
+              }
+              for (const role of ROLES) {
+                if (!present.has(role)) {
+                  anyMissing = true;
+                  const ok = findAugmentingPathAndApply(d, role, grid, scorerFn);
+                  if (!ok) {
+                    forceFillWithFallback(d, role, grid, scorerFn);
+                  }
+                }
+              }
+            }
+            if (!anyMissing) break;
+          }
+        }
+
+        // Forced De-PreLeave Replacement Pass (never creates missing shifts or consecutive shifts)
+        function eliminatePreLeaveShifts(grid) {
+          let improved = true;
+          let guard = 0;
+          while (improved && guard < 40) {
+            improved = false;
+            guard++;
+            for (let d = 1; d <= days; d++) {
+              for (let i = 0; i < N; i++) {
+                const role = grid[i][d];
+                if (!ROLES.includes(role)) continue;
+                if (!isPreLeave[i][d]) continue;
+
+                // 1) Direct replacement by non-pre-leave free person `j`
+                let bestJ = -1;
+                let bestScore = Infinity;
+                for (let j = 0; j < N; j++) {
+                  if (j === i || isPreLeave[j][d]) continue;
+                  if (canWork(j, d, role, grid, false)) {
+                    let cntJ = 0;
+                    for (let x = 1; x <= days; x++) if (ROLES.includes(grid[j][x])) cntJ++;
+                    const diff = cntJ - targetTotal[j];
+                    if (diff < bestScore) {
+                      bestScore = diff;
+                      bestJ = j;
+                    }
+                  }
+                }
+                if (bestJ !== -1) {
+                  grid[bestJ][d] = role;
+                  grid[i][d] = '';
+                  improved = true;
+                  continue;
+                }
+
+                // 2) Same-day role rotation to relieve pre-leave person `i`
+                let rotated = false;
+                for (let k = 0; k < N && !rotated; k++) {
+                  if (k === i || isPreLeave[k][d]) continue;
+                  const roleK = grid[k][d];
+                  if (!ROLES.includes(roleK) || !staffList[k].roles.includes(role)) continue;
+                  for (let j = 0; j < N && !rotated; j++) {
+                    if (j === i || j === k || isPreLeave[j][d]) continue;
+                    if (canWork(j, d, roleK, grid, false)) {
+                      grid[j][d] = roleK;
+                      grid[k][d] = role;
+                      grid[i][d] = '';
+                      improved = true;
+                      rotated = true;
+                    }
+                  }
+                }
+                if (rotated) continue;
+
+                // 3) Neighbor-day unblock by non-pre-leave `m`
+                for (const adjD of [d - 1, d + 1]) {
+                  if (adjD < 1 || adjD > days) continue;
+                  for (let j = 0; j < N; j++) {
+                    if (j === i || isPreLeave[j][d]) continue;
+                    if (isTrain[j][d] || isOff[j][d] || grid[j][d] !== '') continue;
+                    if (!staffList[j].roles.includes(role)) continue;
+                    const adjRole = grid[j][adjD];
+                    if (!ROLES.includes(adjRole)) continue;
+                    const otherAdj = adjD === d - 1 ? d + 1 : d - 1;
+                    if (otherAdj >= 1 && otherAdj <= days && ROLES.includes(grid[j][otherAdj])) continue;
+
+                    let bestM = -1;
+                    let bestMScore = Infinity;
+                    for (let m = 0; m < N; m++) {
+                      if (m === j || m === i || isPreLeave[m][adjD]) continue;
+                      if (canWork(m, adjD, adjRole, grid, false)) {
+                        let cntM = 0;
+                        for (let x = 1; x <= days; x++) if (ROLES.includes(grid[m][x])) cntM++;
+                        if (cntM - targetTotal[m] < bestMScore) {
+                          bestMScore = cntM - targetTotal[m];
+                          bestM = m;
+                        }
+                      }
+                    }
+                    if (bestM !== -1) {
+                      grid[bestM][adjD] = adjRole;
+                      grid[j][adjD] = '';
+                      grid[j][d] = role;
+                      grid[i][d] = '';
+                      improved = true;
+                      break;
+                    }
+                  }
+                  if (improved) break;
+                }
+              }
+            }
+          }
+
+          // If a pre-leave person MUST work on day d, prefer giving them the easiest B-shift (overnight off)
+          for (let d = 1; d <= days; d++) {
+            for (let i = 0; i < N; i++) {
+              const ri = grid[i][d];
+              if (!ROLES.includes(ri) || ri === 'B' || !isPreLeave[i][d]) continue;
+              if (!staffList[i].roles.includes('B')) continue;
+              for (let j = 0; j < N; j++) {
+                if (j === i || isPreLeave[j][d]) continue;
+                if (grid[j][d] === 'B' && staffList[j].roles.includes(ri)) {
+                  grid[i][d] = 'B';
+                  grid[j][d] = ri;
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        function evaluateGrid(grid) {
+          let missingShifts = 0;
+          let consecShifts = 0;
+          let preLeaveShifts = 0;
+          let preLeaveNonB = 0;
+          let bDeviation = 0;
+          let totalDeviation = 0;
+          let redDeviation = 0;
+          let repeatSameRole = 0;
+          let roleBalancePenalty = 0;
+
+          for (let d = 1; d <= days; d++) {
+            const roleCounts = { A: 0, M: 0, B: 0, G: 0 };
+            for (let i = 0; i < N; i++) {
+              const r = grid[i][d];
+              if (ROLES.includes(r)) roleCounts[r]++;
+            }
+            ROLES.forEach(r => {
+              if (roleCounts[r] !== 1) missingShifts += Math.abs(1 - roleCounts[r]);
+            });
+          }
+
+          for (let i = 0; i < N; i++) {
+            let cntTotal = 0;
+            let cntRed = 0;
+            const cntRole = { A: 0, M: 0, B: 0, G: 0 };
+            let lastRole = '';
+
+            for (let d = 1; d <= days; d++) {
+              const r = grid[i][d];
+              if (ROLES.includes(r)) {
+                cntTotal++;
+                cntRole[r]++;
+                if (isRed[d]) cntRed++;
+                if (isPreLeave[i][d]) {
+                  preLeaveShifts++;
+                  if (r !== 'B') preLeaveNonB++;
+                }
+                if (d > 1 && ROLES.includes(grid[i][d - 1])) consecShifts++;
+
+                if (staffList[i].roles.length >= 3 && lastRole === r) {
+                  repeatSameRole++;
+                }
+                lastRole = r;
+              }
+            }
+
+            if (availDays[i] > 0) {
+              const tDiff = cntTotal - targetTotal[i];
+              totalDeviation += tDiff * tDiff;
+
+              const rDiff = cntRed - targetRed[i];
+              redDeviation += rDiff * rDiff;
+
+              if (staffList[i].roles.includes('B')) {
+                const bDiff = cntRole.B - targetB[i];
+                bDeviation += bDiff * bDiff;
+              }
+
+              if (staffList[i].roles.length >= 3) {
+                const nonBRoles = staffList[i].roles.filter(r => r !== 'B');
+                const nonBTotal = nonBRoles.reduce((acc, r) => acc + cntRole[r], 0);
+                const idealEach = nonBRoles.length ? nonBTotal / nonBRoles.length : 0;
+                nonBRoles.forEach(r => {
+                  const dRole = cntRole[r] - idealEach;
+                  roleBalancePenalty += dRole * dRole;
+                });
+              }
+            }
+          }
+
+          return (
+            missingShifts * 100000000 +
+            consecShifts * 5000000 +
+            preLeaveShifts * 800000 +
+            preLeaveNonB * 1500 +
+            bDeviation * 400 +
+            totalDeviation * 260 +
+            redDeviation * 220 +
+            repeatSameRole * 140 +
+            roleBalancePenalty * 45
+          );
+        }
+
+        let bestGrid = null;
+        let bestCost = Infinity;
+
+        // MRV difficulty: days with fewest total available staff (and fewest non-pre-leave staff) go FIRST
+        const dayDifficulty = [];
+        for (let d = 1; d <= days; d++) {
+          let totalAvail = 0;
+          let nonPreCount = 0;
+          for (let i = 0; i < N; i++) {
+            if (!isTrain[i][d] && !isOff[i][d]) {
+              totalAvail++;
+              if (!isPreLeave[i][d]) nonPreCount++;
+            }
+          }
+          dayDifficulty.push({ d, difficulty: totalAvail * 2 + nonPreCount });
+        }
+
+        const ITERATIONS = 140;
+        for (let iter = 0; iter < ITERATIONS; iter++) {
+          const grid = Array.from({ length: N }, (_, i) => {
+            const row = Array(days + 2).fill('');
+            for (let d = 1; d <= days; d++) {
+              if (isTrain[i][d]) row[d] = '訓';
+              else if (isOff[i][d]) row[d] = '休';
+            }
+            return row;
+          });
+
+          const orderedDays = dayDifficulty
+            .map(item => ({ d: item.d, key: item.difficulty + (Math.random() * 1.8 - 0.9) }))
+            .sort((a, b) => a.key - b.key)
+            .map(item => item.d);
+
+          const candidateScorer = (i, d, role, g) => {
+            let cntTotal = 0;
+            let cntB = 0;
+            let cntRed = 0;
+            for (let x = 1; x <= days; x++) {
+              const rx = g[i][x];
+              if (ROLES.includes(rx)) {
+                cntTotal++;
+                if (rx === 'B') cntB++;
+                if (isRed[x]) cntRed++;
+              }
+            }
+
+            const prePenalty = isPreLeave[i][d] ? 100000 : 0;
+
+            let lookaheadBonus = 0;
+            if (d < days && (isOff[i][d + 1] || isTrain[i][d + 1] || isPreLeave[i][d + 1])) {
+              lookaheadBonus = -12;
+            }
+            if (d > 1 && (isOff[i][d - 1] || isTrain[i][d - 1] || isPreLeave[i][d - 1])) {
+              lookaheadBonus -= 8;
+            }
+
+            const scarcityBonus = (staffList[i].roles.length <= 2 && role !== 'B') ? -10 : 0;
+            const totalDeficit = (cntTotal - targetTotal[i]) * 18;
+            const bDeficit = role === 'B' ? (cntB - targetB[i]) * 26 : 0;
+            const redDeficit = isRed[d] ? (cntRed - targetRed[i]) * 14 : 0;
+
+            let repeatPen = 0;
+            if (staffList[i].roles.length >= 3) {
+              for (let pd = d - 1; pd >= 1; pd--) {
+                if (ROLES.includes(g[i][pd])) {
+                  if (g[i][pd] === role) repeatPen += 15;
+                  break;
+                }
+              }
+              for (let nd = d + 1; nd <= days; nd++) {
+                if (ROLES.includes(g[i][nd])) {
+                  if (g[i][nd] === role) repeatPen += 15;
+                  break;
+                }
+              }
+            }
+
+            return prePenalty + totalDeficit + bDeficit + redDeficit + repeatPen + lookaheadBonus + scarcityBonus + (Math.random() * 6);
+          };
+
+          for (const d of orderedDays) {
+            const roleOrder = ROLES.slice().sort((r1, r2) => {
+              const q1 = staffList.filter((s, i) => s.roles.includes(r1) && isPersonFreeOnDay(i, d, grid)).length;
+              const q2 = staffList.filter((s, i) => s.roles.includes(r2) && isPersonFreeOnDay(i, d, grid)).length;
+              if (q1 !== q2) return q1 - q2;
+              if (r1 === 'B') return -1;
+              if (r2 === 'B') return 1;
+              return Math.random() - 0.5;
+            });
+
+            for (const role of roleOrder) {
+              const ok = findAugmentingPathAndApply(d, role, grid, candidateScorer);
+              if (!ok) {
+                forceFillWithFallback(d, role, grid, candidateScorer);
+              }
+            }
+          }
+
+          // Guarantee 100% full shifts across all days
+          fillAllMissingHoles(grid, candidateScorer);
+
+          // Eliminate any unnecessary pre-leave shifts
+          eliminatePreLeaveShifts(grid);
+
+          // Re-verify 100% full shifts
+          fillAllMissingHoles(grid, candidateScorer);
+
+          // Local optimization: same-day role swaps & cross-person day swaps
+          let curCost = evaluateGrid(grid);
+          for (let step = 0; step < 360; step++) {
+            const d = 1 + Math.floor(Math.random() * days);
+            const i = Math.floor(Math.random() * N);
+            const j = Math.floor(Math.random() * N);
+            if (i === j) continue;
+
+            const ri = grid[i][d];
+            const rj = grid[j][d];
+
+            if (ROLES.includes(ri) && ROLES.includes(rj) && ri !== rj) {
+              if (staffList[i].roles.includes(rj) && staffList[j].roles.includes(ri)) {
+                grid[i][d] = rj;
+                grid[j][d] = ri;
+                const newCost = evaluateGrid(grid);
+                if (newCost <= curCost) {
+                  curCost = newCost;
+                } else {
+                  grid[i][d] = ri;
+                  grid[j][d] = rj;
+                }
+              }
+            } else if (ROLES.includes(ri) && rj === '') {
+              if (!isPreLeave[i][d] && isPreLeave[j][d]) continue;
+              grid[i][d] = '';
+              if (canWork(j, d, ri, grid, false)) {
+                grid[j][d] = ri;
+                const newCost = evaluateGrid(grid);
+                if (newCost <= curCost) {
+                  curCost = newCost;
+                } else {
+                  grid[j][d] = '';
+                  grid[i][d] = ri;
+                }
+              } else {
+                grid[i][d] = ri;
+              }
+            }
+          }
+
+          if (curCost < bestCost) {
+            bestCost = curCost;
+            bestGrid = grid;
+          }
+        }
+
+        const result = {};
+        staffList.forEach((s, i) => {
+          result[s.id] = {};
+          for (let d = 1; d <= days; d++) {
+            result[s.id][d] = bestGrid[i][d] || '';
+          }
+        });
+
+        state.scheduleByMonth[key] = result;
+        saveState();
+        renderScheduleOutput();
+      }
+
+      // =========================================================================
+      // UI RENDERING FUNCTIONS
+      // =========================================================================
+      function renderHeader() {
+        const y = state.year;
+        const m = state.month;
+        document.getElementById('current-month-label').textContent = `${y}年 ${m}月`;
+        const days = getDaysInMonth(y, m);
+        let redCount = 0;
+        for (let d = 1; d <= days; d++) if (isRedDay(y, m, d)) redCount++;
+        document.getElementById('red-day-badge').textContent = `紅字 ${redCount} 天`;
+      }
+
+      function renderRoster() {
+        const g1 = state.roster.filter(s => s.group === 1);
+        const g2 = state.roster.filter(s => s.group === 2);
+        document.getElementById('count-group-1').textContent = `${g1.length} 人`;
+        document.getElementById('count-group-2').textContent = `${g2.length} 人`;
+
+        renderGroupList('list-group-1', g1);
+        renderGroupList('list-group-2', g2);
+        if (window.lucide) lucide.createIcons();
+      }
+
+      function renderGroupList(containerId, members) {
+        const el = document.getElementById(containerId);
+        if (!members.length) {
+          el.innerHTML = `<div class="px-4 py-6 text-center text-xs text-slate-400">尚無人員</div>`;
+          return;
+        }
+
+        const roleStyles = {
+          A: 'bg-sky-100 text-sky-800 border-sky-200',
+          M: 'bg-amber-100 text-amber-800 border-amber-200',
+          B: 'bg-violet-100 text-violet-800 border-violet-200',
+          G: 'bg-emerald-100 text-emerald-800 border-emerald-200'
+        };
+
+        el.innerHTML = members.map((s, idx) => {
+          const trainBadge = s.trainStart
+            ? `<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 border border-orange-200 text-[10px] font-bold">訓 ${s.trainStart.slice(5).replace('-', '/')}~${(s.trainEnd || s.trainStart).slice(5).replace('-', '/')}</span>`
+            : '';
+          const adjBadge = s.adj !== 0
+            ? `<span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-bold">${s.adj > 0 ? '+' + s.adj : s.adj}班</span>`
+            : '';
+
+          const roleBtns = ROLES.map(r => {
+            const active = s.roles.includes(r);
+            const cls = active
+              ? `${roleStyles[r]} font-bold`
+              : 'bg-slate-50 text-slate-300 border-slate-200 font-medium';
+            return `<button type="button" data-action="toggle-role" data-id="${s.id}" data-role="${r}" class="w-6 h-6 rounded-md border text-[11px] transition ${cls}">${r}</button>`;
+          }).join('');
+
+          return `
+            <div class="px-4 py-2.5 flex items-center justify-between gap-2 hover:bg-slate-50/80 transition">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="text-xs font-medium text-slate-400 w-4 shrink-0">${idx + 1}.</span>
+                <button type="button" data-action="edit-staff" data-id="${s.id}" class="text-sm font-bold text-slate-800 hover:text-indigo-600 truncate text-left transition" title="點擊設定受訓日期與資格">
+                  ${escapeHtml(s.name)}
+                </button>
+                ${trainBadge}
+                ${adjBadge}
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <div class="flex items-center gap-1">${roleBtns}</div>
+                <button type="button" data-action="swap-group" data-id="${s.id}" class="ml-1 px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-600 text-[11px] font-semibold transition" title="切換至另一組">⇄ 換組</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      function renderLeaveCalendar() {
+        const y = state.year;
+        const m = state.month;
+        const key = ymKey(y, m);
+        ensureMonthData(y, m);
+
+        const days = getDaysInMonth(y, m);
+        const leavesMap = state.leavesByMonth[key];
+
+        let redCount = 0;
+        const holidayList = [];
+        for (let d = 1; d <= days; d++) {
+          if (isRedDay(y, m, d)) redCount++;
+          const hn = getHolidayName(y, m, d);
+          if (hn) holidayList.push(`${m}/${d} ${hn}`);
+        }
+        document.getElementById('leave-tw-info').textContent =
+          `應休紅字基準：${redCount} 天` + (holidayList.length ? `（國定假日：${holidayList.join('、')}）` : '');
+
+        let thHtml = `<tr><th class="sticky-corner bg-slate-100 border-b border-r border-slate-200 px-3 py-2 text-left font-bold text-slate-700 min-w-[96px]">人員 / 日期</th>`;
+        for (let d = 1; d <= days; d++) {
+          const dow = new Date(y, m - 1, d).getDay();
+          const red = isRedDay(y, m, d);
+          const hn = getHolidayName(y, m, d);
+          thHtml += `
+            <th class="border-b border-r border-slate-200 px-1 py-1.5 min-w-[30px] ${red ? 'bg-rose-50 text-rose-700' : 'bg-slate-50 text-slate-600'}" title="${hn}">
+              <div class="font-bold leading-tight">${d}</div>
+              <div class="text-[10px] opacity-80">${WEEKDAY_NAMES[dow]}</div>
+            </th>`;
+        }
+        thHtml += `<th class="border-b border-slate-200 bg-slate-100 px-2 py-1.5 font-bold text-slate-700 min-w-[54px]">已劃/訓</th></tr>`;
+        document.getElementById('leave-thead').innerHTML = thHtml;
+
+        const orderedStaff = [
+          ...state.roster.filter(s => s.group === 1),
+          ...state.roster.filter(s => s.group === 2)
+        ];
+
+        const dailyLeaveCnt = Array(days + 1).fill(0);
+        const dailyTrainCnt = Array(days + 1).fill(0);
+        const dailyNonPreAvailCnt = Array(days + 1).fill(0);
+
+        let tbHtml = '';
+        orderedStaff.forEach(s => {
+          const sLeaves = leavesMap[s.id] || [];
+          let trainDaysCount = 0;
+          const dotColor = s.group === 1 ? 'bg-indigo-500' : 'bg-teal-500';
+          tbHtml += `<tr class="hover:bg-slate-50/70">
+            <td class="sticky-col bg-white border-b border-r border-slate-200 px-2.5 py-1.5 text-left font-bold text-slate-800 whitespace-nowrap">
+              <span class="inline-block w-2 h-2 rounded-full ${dotColor} mr-1"></span>${escapeHtml(s.name)}
+            </td>`;
+
+          for (let d = 1; d <= days; d++) {
+            const ds = dateStr(y, m, d);
+            const isTrain = isStaffTrainingOnDate(s, ds);
+            const isLeave = !isTrain && sLeaves.includes(d);
+            const isPre = !isTrain && !isLeave && isPreLeaveDay(s.id, y, m, d, leavesMap);
+            const red = isRedDay(y, m, d);
+
+            if (isTrain) {
+              trainDaysCount++;
+              dailyTrainCnt[d]++;
+              tbHtml += `<td class="border-b border-r border-slate-200 bg-orange-100 text-orange-800 font-bold select-none" title="受訓期間鎖定">訓</td>`;
+            } else if (isLeave) {
+              dailyLeaveCnt[d]++;
+              tbHtml += `<td data-action="toggle-leave" data-id="${s.id}" data-day="${d}" class="border-b border-r border-slate-200 bg-rose-100 text-rose-700 font-bold cursor-pointer hover:bg-rose-200 select-none">休</td>`;
+            } else {
+              if (!isPre) dailyNonPreAvailCnt[d]++;
+              const bg = red ? 'bg-rose-50/40' : 'bg-white';
+              const preDot = isPre ? `<span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400" title="休假前一日（優先留空班）"></span>` : '';
+              tbHtml += `<td data-action="toggle-leave" data-id="${s.id}" data-day="${d}" class="border-b border-r border-slate-200 ${bg} cursor-pointer hover:bg-indigo-50 select-none">${preDot}</td>`;
+            }
+          }
+
+          tbHtml += `<td class="border-b border-slate-200 bg-slate-50 font-bold text-slate-700 px-1.5">${sLeaves.length}${trainDaysCount ? `<span class="text-orange-600">/${trainDaysCount}訓</span>` : ''}</td></tr>`;
+        });
+        document.getElementById('leave-tbody').innerHTML = tbHtml;
+
+        let tfHtml = `<tr class="bg-slate-100/90 text-[10px] font-bold text-slate-600">
+          <td class="sticky-col bg-slate-100 border-r border-slate-200 px-2.5 py-1.5 text-left">非休前可排</td>`;
+        for (let d = 1; d <= days; d++) {
+          const totalAvail = orderedStaff.length - dailyLeaveCnt[d] - dailyTrainCnt[d];
+          const nonPre = dailyNonPreAvailCnt[d];
+          const warnCls = nonPre < 4 ? 'text-amber-700 bg-amber-50' : 'text-emerald-700';
+          tfHtml += `<td class="border-r border-slate-200 py-1 ${warnCls}" title="非休前可排 ${nonPre} 人 / 總可排 ${totalAvail} 人">${nonPre}/${totalAvail}</td>`;
+        }
+        tfHtml += `<td class="px-1.5 py-1 text-slate-500">人數</td></tr>`;
+        document.getElementById('leave-tfoot').innerHTML = tfHtml;
+      }
+
+      function renderScheduleOutput() {
+        const y = state.year;
+        const m = state.month;
+        const key = ymKey(y, m);
+        const section = document.getElementById('schedule-output-section');
+        const sched = state.scheduleByMonth[key];
+
+        if (!sched) {
+          section.classList.add('hidden');
+          return;
+        }
+        section.classList.remove('hidden');
+        document.getElementById('schedule-output-title').textContent = `${y}年 ${m}月 排班總表`;
+
+        const days = getDaysInMonth(y, m);
+        const leavesMap = state.leavesByMonth[key] || {};
+        const orderedStaff = [
+          ...state.roster.filter(s => s.group === 1),
+          ...state.roster.filter(s => s.group === 2)
+        ];
+
+        let redBaseline = 0;
+        for (let d = 1; d <= days; d++) if (isRedDay(y, m, d)) redBaseline++;
+        document.getElementById('summary-red-baseline').textContent = `應休紅字基準：${redBaseline} 天`;
+
+        let thHtml = `<tr><th class="sticky-corner bg-slate-100 border-b border-r border-slate-200 px-3 py-2 text-left font-bold text-slate-700 min-w-[96px]">人員</th>`;
+        for (let d = 1; d <= days; d++) {
+          const dow = new Date(y, m - 1, d).getDay();
+          const red = isRedDay(y, m, d);
+          thHtml += `
+            <th class="border-b border-r border-slate-200 px-1 py-1.5 min-w-[32px] ${red ? 'bg-rose-50 text-rose-700' : 'bg-slate-50 text-slate-600'}">
+              <div class="font-bold leading-tight">${d}</div>
+              <div class="text-[10px] opacity-80">${WEEKDAY_NAMES[dow]}</div>
+            </th>`;
+        }
+        thHtml += `
+          <th class="border-b border-r border-slate-200 bg-slate-100 px-2 py-1.5 font-bold text-slate-700 min-w-[44px]">總班</th>
+          <th class="border-b border-r border-slate-200 bg-rose-50 px-2 py-1.5 font-bold text-rose-700 min-w-[44px]">紅字</th>
+          <th class="border-b border-r border-slate-200 bg-slate-100 px-2 py-1.5 font-bold text-slate-700 min-w-[66px]">A/M/B/G</th>
+          <th class="border-b border-r border-slate-200 bg-amber-50 px-2 py-1.5 font-bold text-amber-800 min-w-[48px]">休前班</th>
+          <th class="border-b border-slate-200 bg-slate-100 px-2 py-1.5 font-bold text-slate-700 min-w-[54px]">休/訓/空</th>
+        </tr>`;
+        document.getElementById('schedule-thead').innerHTML = thHtml;
+
+        const cellBadgeStyles = {
+          A: 'bg-sky-100 text-sky-800 font-bold',
+          M: 'bg-amber-100 text-amber-800 font-bold',
+          B: 'bg-violet-100 text-violet-800 font-bold',
+          G: 'bg-emerald-100 text-emerald-800 font-bold',
+          '休': 'bg-rose-50 text-rose-600 font-semibold',
+          '訓': 'bg-orange-100 text-orange-800 font-bold'
+        };
+
+        let tbHtml = '';
+        let invalidDays = 0;
+        let consecWarnings = 0;
+        let preLeaveShiftTotal = 0;
+
+        orderedStaff.forEach(s => {
+          const sRow = sched[s.id] || {};
+          const dotColor = s.group === 1 ? 'bg-indigo-500' : 'bg-teal-500';
+          let totalShift = 0;
+          let redShift = 0;
+          let preLeaveShift = 0;
+          let offTrainEmpty = 0;
+          const roleCnt = { A: 0, M: 0, B: 0, G: 0 };
+
+          tbHtml += `<tr class="hover:bg-slate-50/60">
+            <td class="sticky-col bg-white border-b border-r border-slate-200 px-2.5 py-1.5 text-left font-bold text-slate-800 whitespace-nowrap">
+              <span class="inline-block w-2 h-2 rounded-full ${dotColor} mr-1"></span>${escapeHtml(s.name)}
+            </td>`;
+
+          for (let d = 1; d <= days; d++) {
+            const ds = dateStr(y, m, d);
+            const forcedTrain = isStaffTrainingOnDate(s, ds);
+            const val = forcedTrain ? '訓' : (sRow[d] || '');
+            const isDuty = ROLES.includes(val);
+            const isPre = isPreLeaveDay(s.id, y, m, d, leavesMap);
+            const prevDs = d > 1 ? dateStr(y, m, d - 1) : '';
+            const prevVal = d > 1 ? (isStaffTrainingOnDate(s, prevDs) ? '訓' : (sRow[d - 1] || '')) : '';
+            const isConsec = isDuty && d > 1 && ROLES.includes(prevVal);
+
+            if (isDuty) {
+              totalShift++;
+              roleCnt[val]++;
+              if (isRedDay(y, m, d)) redShift++;
+              if (isPre) {
+                preLeaveShift++;
+                preLeaveShiftTotal++;
+              }
+              if (isConsec) consecWarnings++;
+            } else {
+              offTrainEmpty++;
+            }
+
+            let cls = cellBadgeStyles[val] || (isRedDay(y, m, d) ? 'bg-rose-50/30 text-slate-300' : 'bg-white text-slate-300');
+            if (isDuty && isPre) cls += ' ring-2 ring-inset ring-amber-400';
+            if (isConsec) cls += ' ring-2 ring-inset ring-rose-500';
+
+            const clickable = forcedTrain ? '' : `data-action="cycle-shift" data-id="${s.id}" data-day="${d}"`;
+            const cursorCls = forcedTrain ? 'cursor-not-allowed' : 'cursor-pointer shift-cell';
+            tbHtml += `<td ${clickable} class="border-b border-r border-slate-200 py-1.5 ${cls} ${cursorCls}">${val || '·'}</td>`;
+          }
+
+          tbHtml += `
+            <td class="border-b border-r border-slate-200 font-bold text-indigo-700 bg-slate-50/60">${totalShift}</td>
+            <td class="border-b border-r border-slate-200 font-bold text-rose-600 bg-rose-50/30">${redShift}</td>
+            <td class="border-b border-r border-slate-200 font-medium text-slate-600 text-[11px]">${roleCnt.A}/${roleCnt.M}/${roleCnt.B}/${roleCnt.G}</td>
+            <td class="border-b border-r border-slate-200 font-bold ${preLeaveShift > 0 ? 'text-amber-700 bg-amber-50/60' : 'text-slate-400'}">${preLeaveShift}</td>
+            <td class="border-b border-slate-200 font-medium text-slate-600">${offTrainEmpty}天</td>
+          </tr>`;
+        });
+        document.getElementById('schedule-tbody').innerHTML = tbHtml;
+
+        let tfHtml = `<tr class="bg-slate-100 text-[11px] font-bold">
+          <td class="sticky-col bg-slate-100 border-r border-slate-200 px-2.5 py-1.5 text-left text-slate-700">每日檢核</td>`;
+        let grandTotalShifts = 0;
+        for (let d = 1; d <= days; d++) {
+          const found = new Set();
+          let count = 0;
+          orderedStaff.forEach(s => {
+            const ds = dateStr(y, m, d);
+            const v = isStaffTrainingOnDate(s, ds) ? '訓' : ((sched[s.id] && sched[s.id][d]) || '');
+            if (ROLES.includes(v)) {
+              found.add(v);
+              count++;
+              grandTotalShifts++;
+            }
+          });
+          const ok = count === 4 && found.size === 4;
+          if (!ok) invalidDays++;
+          tfHtml += `<td class="border-r border-slate-200 py-1.5 ${ok ? 'text-emerald-600' : 'text-rose-600 bg-rose-100'}">${ok ? '✓' : count}</td>`;
+        }
+        tfHtml += `<td colspan="5" class="px-2 py-1.5 text-right text-slate-600">共 ${grandTotalShifts} 班</td></tr>`;
+        document.getElementById('schedule-tfoot').innerHTML = tfHtml;
+
+        const banner = document.getElementById('schedule-alert-banner');
+        if (invalidDays > 0 || consecWarnings > 0) {
+          banner.className = 'rounded-xl border border-amber-300 bg-amber-50 text-amber-900 px-3.5 py-2.5 text-xs';
+          banner.innerHTML = `⚠️ <strong>檢核提醒：</strong>目前有 ${invalidDays} 天未滿「A/M/B/G 各 1 人」或有 ${consecWarnings} 處連續 24H 標記，可點擊儲存格微調或重新洗牌。`;
+          banner.classList.remove('hidden');
+        } else if (preLeaveShiftTotal > 0) {
+          banner.className = 'rounded-xl border border-amber-200 bg-amber-50/70 text-amber-900 px-3.5 py-2.5 text-xs';
+          banner.innerHTML = `ℹ️ <strong>已達最高優先休假前空班最佳化：</strong>全月僅 ${preLeaveShiftTotal} 班因當日全組連休／受訓導致非休前可用人力不足 4 人（或資格受限）而不得已排入休假前一日（已以琥珀色外框標示）。`;
+          banner.classList.remove('hidden');
+        } else {
+          banner.className = 'rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-3.5 py-2.5 text-xs';
+          banner.innerHTML = `✅ <strong>完美班表達成：</strong>全月每日皆滿「A / M / B / G 各 1 人」、零連續 24H 勤務，且 <strong>100% 保留所有人員休假前一日空班（休前班 = 0）</strong>！`;
+          banner.classList.remove('hidden');
+        }
+      }
+
+      function escapeHtml(str) {
+        return String(str).replace(/[&<>"']/g, c => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+      }
+
+      // =========================================================================
+      // MODAL & DUAL-CHANNEL BACKUP / RESTORE
+      // =========================================================================
+      function openEditModal(staffId) {
+        const s = state.roster.find(x => x.id === staffId);
+        if (!s) return;
+        state.editingStaffId = staffId;
+
+        document.getElementById('modal-staff-name').value = s.name;
+        document.getElementById('modal-staff-group').value = String(s.group);
+        document.getElementById('modal-staff-adj').textContent = String(s.adj || 0);
+
+        document.querySelectorAll('.modal-role-cb').forEach(cb => {
+          cb.checked = s.roles.includes(cb.value);
+        });
+
+        const hasTrain = Boolean(s.trainStart);
+        document.getElementById('modal-training-enabled').checked = hasTrain;
+        const defaultDate = dateStr(state.year, state.month, 1);
+        document.getElementById('modal-training-start').value = s.trainStart || defaultDate;
+        document.getElementById('modal-training-end').value = s.trainEnd || s.trainStart || defaultDate;
+        toggleTrainingInputs(hasTrain);
+
+        const modal = document.getElementById('staff-modal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+      }
+
+      function closeEditModal() {
+        state.editingStaffId = null;
+        const modal = document.getElementById('staff-modal');
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+
+      function toggleTrainingInputs(enabled) {
+        const fields = document.getElementById('modal-training-fields');
+        fields.style.opacity = enabled ? '1' : '0.45';
+        fields.style.pointerEvents = enabled ? 'auto' : 'none';
+      }
+
+      function addDaysToIso(isoStr, deltaDays) {
+        const [yy, mm, dd] = isoStr.split('-').map(Number);
+        const dt = new Date(yy, mm - 1, dd + deltaDays);
+        return dateStr(dt.getFullYear(), dt.getMonth() + 1, dt.getDate());
+      }
+
+      function openBackupModal() {
+        const jsonText = JSON.stringify(getSerializablePayload(), null, 2);
+        document.getElementById('textarea-backup-code').value = jsonText;
+        const modal = document.getElementById('backup-modal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        if (window.lucide) lucide.createIcons();
+      }
+
+      function closeBackupModal() {
+        const modal = document.getElementById('backup-modal');
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+
+      function openRestoreModal() {
+        document.getElementById('textarea-restore-code').value = '';
+        const modal = document.getElementById('restore-modal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        if (window.lucide) lucide.createIcons();
+      }
+
+      function closeRestoreModal() {
+        const modal = document.getElementById('restore-modal');
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+
+      function executeRestoreFromText(rawText) {
+        try {
+          const cleaned = String(rawText || '').replace(/^\uFEFF/, '').trim();
+          if (!cleaned) {
+            showToast('請先選擇檔案或貼上備份代碼！', 'error');
+            return false;
+          }
+          const parsed = JSON.parse(cleaned);
+          const applied = parseAndApplyBackupObject(parsed);
+          if (!applied) {
+            showToast('還原失敗：內容中找不到有效的人員名單（roster / staff）。', 'error');
+            return false;
+          }
+          state.year = applied.year;
+          state.month = applied.month;
+          state.roster = applied.roster;
+          state.leavesByMonth = applied.leavesByMonth;
+          state.scheduleByMonth = applied.scheduleByMonth;
+          saveState();
+          refreshAll();
+          closeRestoreModal();
+          showToast(`✅ 已成功還原 ${applied.year}年${applied.month}月 資料（共 ${applied.roster.length} 位人員）！`, 'success');
+          return true;
+        } catch (err) {
+          showToast('還原失敗：格式不是有效的 JSON 備份代碼。', 'error');
+          return false;
+        }
+      }
+
+      function exportCsv() {
+        const y = state.year;
+        const m = state.month;
+        const key = ymKey(y, m);
+        const sched = state.scheduleByMonth[key];
+        if (!sched) return;
+
+        const days = getDaysInMonth(y, m);
+        const leavesMap = state.leavesByMonth[key] || {};
+        const orderedStaff = [
+          ...state.roster.filter(s => s.group === 1),
+          ...state.roster.filter(s => s.group === 2)
+        ];
+
+        const header = ['組別', '人員'];
+        for (let d = 1; d <= days; d++) {
+          const dow = WEEKDAY_NAMES[new Date(y, m - 1, d).getDay()];
+          header.push(`${m}/${d}(${dow})`);
+        }
+        header.push('總班', '紅字班', 'A班', 'M班', 'B班(外宿)', 'G班', '休前班', '休/訓/空');
+
+        const rows = [header];
+        orderedStaff.forEach(s => {
+          const sRow = sched[s.id] || {};
+          const line = [`第${s.group}組`, s.name];
+          let tot = 0, red = 0, pre = 0, offCnt = 0;
+          const rc = { A: 0, M: 0, B: 0, G: 0 };
+
+          for (let d = 1; d <= days; d++) {
+            const ds = dateStr(y, m, d);
+            const val = isStaffTrainingOnDate(s, ds) ? '訓' : (sRow[d] || '');
+            line.push(val);
+            if (ROLES.includes(val)) {
+              tot++;
+              rc[val]++;
+              if (isRedDay(y, m, d)) red++;
+              if (isPreLeaveDay(s.id, y, m, d, leavesMap)) pre++;
+            } else {
+              offCnt++;
+            }
+          }
+          line.push(tot, red, rc.A, rc.M, rc.B, rc.G, pre, offCnt);
+          rows.push(line);
+        });
+
+        const csvText = '\uFEFF' + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+        const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `排班總表_${y}年${pad2(m)}月.csv`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      // =========================================================================
+      // EVENT LISTENERS
+      // =========================================================================
+      document.getElementById('btn-prev-month').addEventListener('click', () => {
+        if (state.month === 1) { state.year--; state.month = 12; }
+        else { state.month--; }
+        saveState();
+        refreshAll();
+      });
+
+      document.getElementById('btn-next-month').addEventListener('click', () => {
+        if (state.month === 12) { state.year++; state.month = 1; }
+        else { state.month++; }
+        saveState();
+        refreshAll();
+      });
+
+      document.getElementById('form-add-staff').addEventListener('submit', e => {
+        e.preventDefault();
+        const input = document.getElementById('input-new-staff-name');
+        const name = input.value.trim();
+        if (!name) return;
+        const g1Count = state.roster.filter(s => s.group === 1).length;
+        const g2Count = state.roster.filter(s => s.group === 2).length;
+        const newStaff = {
+          id: 's_' + Date.now().toString(36),
+          name,
+          group: g1Count <= g2Count ? 1 : 2,
+          roles: ['A', 'M', 'B', 'G'],
+          adj: 0,
+          trainStart: '',
+          trainEnd: ''
+        };
+        state.roster.push(newStaff);
+        const key = ymKey(state.year, state.month);
+        ensureMonthData(state.year, state.month);
+        state.leavesByMonth[key][newStaff.id] = [];
+        input.value = '';
+        saveState();
+        refreshAll();
+      });
+
+      document.addEventListener('click', e => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const action = btn.dataset.action;
+        const id = btn.dataset.id;
+
+        if (action === 'toggle-role') {
+          const role = btn.dataset.role;
+          const s = state.roster.find(x => x.id === id);
+          if (!s) return;
+          if (s.roles.includes(role)) {
+            if (s.roles.length <= 1) return;
+            s.roles = s.roles.filter(r => r !== role);
+          } else {
+            s.roles = ROLES.filter(r => s.roles.includes(r) || r === role);
+          }
+          saveState();
+          renderRoster();
+        } else if (action === 'swap-group') {
+          const s = state.roster.find(x => x.id === id);
+          if (!s) return;
+          s.group = s.group === 1 ? 2 : 1;
+          saveState();
+          renderRoster();
+          renderLeaveCalendar();
+          renderScheduleOutput();
+        } else if (action === 'edit-staff') {
+          openEditModal(id);
+        } else if (action === 'toggle-leave') {
+          const day = Number(btn.dataset.day);
+          const key = ymKey(state.year, state.month);
+          ensureMonthData(state.year, state.month);
+          const arr = state.leavesByMonth[key][id] || [];
+          const idx = arr.indexOf(day);
+          if (idx >= 0) arr.splice(idx, 1);
+          else { arr.push(day); arr.sort((a, b) => a - b); }
+          state.leavesByMonth[key][id] = arr;
+          saveState();
+          renderLeaveCalendar();
+        } else if (action === 'cycle-shift') {
+          const day = Number(btn.dataset.day);
+          const key = ymKey(state.year, state.month);
+          const sched = state.scheduleByMonth[key];
+          if (!sched || !sched[id]) return;
+          const cycle = ['A', 'M', 'B', 'G', '休', ''];
+          const cur = sched[id][day] || '';
+          const next = cycle[(cycle.indexOf(cur) + 1) % cycle.length];
+          sched[id][day] = next;
+          saveState();
+          renderScheduleOutput();
+        }
+      });
+
+      document.getElementById('btn-toggle-leave-drawer').addEventListener('click', () => {
+        state.leaveDrawerOpen = !state.leaveDrawerOpen;
+        const drawer = document.getElementById('leave-drawer');
+        const label = document.getElementById('label-leave-drawer');
+        if (state.leaveDrawerOpen) {
+          drawer.classList.remove('hidden');
+          label.textContent = '收合劃假表';
+        } else {
+          drawer.classList.add('hidden');
+          label.textContent = '展開劃假表';
+        }
+      });
+
+      document.getElementById('btn-reset-biweekly-leaves').addEventListener('click', () => {
+        const key = ymKey(state.year, state.month);
+        state.leavesByMonth[key] = generateDefaultBiweeklyLeaves(state.year, state.month);
+        saveState();
+        renderLeaveCalendar();
+      });
+
+      document.getElementById('btn-clear-all-leaves').addEventListener('click', () => {
+        const key = ymKey(state.year, state.month);
+        const empty = {};
+        state.roster.forEach(s => { empty[s.id] = []; });
+        state.leavesByMonth[key] = empty;
+        saveState();
+        renderLeaveCalendar();
+      });
+
+      document.getElementById('btn-generate').addEventListener('click', runSmartScheduler);
+      document.getElementById('btn-regenerate').addEventListener('click', runSmartScheduler);
+      document.getElementById('btn-export-csv').addEventListener('click', exportCsv);
+
+      // Staff Edit Modal Events
+      document.getElementById('btn-close-modal').addEventListener('click', closeEditModal);
+      document.getElementById('btn-cancel-modal').addEventListener('click', closeEditModal);
+
+      document.getElementById('modal-training-enabled').addEventListener('change', e => {
+        toggleTrainingInputs(e.target.checked);
+      });
+
+      document.getElementById('btn-clear-training').addEventListener('click', () => {
+        document.getElementById('modal-training-enabled').checked = false;
+        toggleTrainingInputs(false);
+      });
+
+      document.querySelectorAll('.btn-quick-train').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const daysCount = Number(btn.dataset.trainDays);
+          const startEl = document.getElementById('modal-training-start');
+          const endEl = document.getElementById('modal-training-end');
+          if (!startEl.value) startEl.value = dateStr(state.year, state.month, 1);
+          endEl.value = addDaysToIso(startEl.value, daysCount - 1);
+          document.getElementById('modal-training-enabled').checked = true;
+          toggleTrainingInputs(true);
+        });
+      });
+
+      document.getElementById('btn-adj-minus').addEventListener('click', () => {
+        const el = document.getElementById('modal-staff-adj');
+        el.textContent = String(Number(el.textContent) - 1);
+      });
+
+      document.getElementById('btn-adj-plus').addEventListener('click', () => {
+        const el = document.getElementById('modal-staff-adj');
+        el.textContent = String(Number(el.textContent) + 1);
+      });
+
+      document.getElementById('btn-delete-staff').addEventListener('click', () => {
+        if (!state.editingStaffId) return;
+        state.roster = state.roster.filter(s => s.id !== state.editingStaffId);
+        closeEditModal();
+        saveState();
+        refreshAll();
+      });
+
+      document.getElementById('btn-save-modal').addEventListener('click', () => {
+        const s = state.roster.find(x => x.id === state.editingStaffId);
+        if (!s) return;
+        const name = document.getElementById('modal-staff-name').value.trim();
+        if (name) s.name = name;
+        s.group = Number(document.getElementById('modal-staff-group').value) === 2 ? 2 : 1;
+
+        const checkedRoles = [];
+        document.querySelectorAll('.modal-role-cb').forEach(cb => {
+          if (cb.checked) checkedRoles.push(cb.value);
+        });
+        if (checkedRoles.length > 0) s.roles = checkedRoles;
+
+        s.adj = Number(document.getElementById('modal-staff-adj').textContent) || 0;
+
+        const trainEnabled = document.getElementById('modal-training-enabled').checked;
+        if (trainEnabled) {
+          const ts = document.getElementById('modal-training-start').value;
+          const te = document.getElementById('modal-training-end').value;
+          if (ts) {
+            s.trainStart = ts;
+            s.trainEnd = (te && te >= ts) ? te : ts;
+          } else {
+            s.trainStart = '';
+            s.trainEnd = '';
+          }
+        } else {
+          s.trainStart = '';
+          s.trainEnd = '';
+        }
+
+        closeEditModal();
+        saveState();
+        refreshAll();
+      });
+
+      // Dual-Channel Backup Modal Events
+      document.getElementById('btn-open-backup').addEventListener('click', openBackupModal);
+      document.getElementById('btn-close-backup').addEventListener('click', closeBackupModal);
+
+      document.getElementById('btn-download-json-file').addEventListener('click', () => {
+        const jsonText = JSON.stringify(getSerializablePayload(), null, 2);
+        const blob = new Blob([jsonText], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `自動排班神器備份_${ymKey(state.year, state.month)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('✅ 已觸發下載 .json 備份檔（若預覽環境阻擋下載，請點下方「一鍵複製代碼」）', 'success');
+      });
+
+      document.getElementById('btn-copy-backup-code').addEventListener('click', () => {
+        const ta = document.getElementById('textarea-backup-code');
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        let ok = false;
+        try {
+          ok = document.execCommand('copy');
+        } catch (e) {}
+        if (ok) {
+          showToast('✅ 已複製完整備份代碼到剪貼簿！請貼到 LINE 或記事本保存。', 'success');
+        } else {
+          showToast('請長按上方文字框全選並複製備份代碼', 'info');
+        }
+      });
+
+      // Dual-Channel Restore Modal Events
+      document.getElementById('btn-open-restore').addEventListener('click', openRestoreModal);
+      document.getElementById('btn-close-restore').addEventListener('click', closeRestoreModal);
+
+      document.getElementById('btn-pick-json-file').addEventListener('click', () => {
+        document.getElementById('input-restore-json').click();
+      });
+
+      document.getElementById('input-restore-json').addEventListener('change', e => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = ev => {
+          executeRestoreFromText(ev.target.result);
+        };
+        reader.onerror = () => {
+          showToast('讀取檔案失敗，請改用下方「貼上備份代碼」還原。', 'error');
+        };
+        reader.readAsText(file, 'UTF-8');
+        e.target.value = '';
+      });
+
+      document.getElementById('btn-apply-restore-code').addEventListener('click', () => {
+        const text = document.getElementById('textarea-restore-code').value;
+        executeRestoreFromText(text);
+      });
+
+      document.getElementById('btn-reset-default-roster').addEventListener('click', () => {
+        state.roster = createDefaultRoster();
+        const key = ymKey(state.year, state.month);
+        state.leavesByMonth[key] = generateDefaultBiweeklyLeaves(state.year, state.month);
+        delete state.scheduleByMonth[key];
+        saveState();
+        refreshAll();
+        showToast('已還原為預設 10 人對組名單', 'info');
+      });
+
+      function refreshAll() {
+        renderHeader();
+        renderRoster();
+        renderLeaveCalendar();
+        renderScheduleOutput();
+        if (window.lucide) lucide.createIcons();
+      }
+
+      loadState();
+      refreshAll();
+    })();
+  </script>
+</body>
+</html>
