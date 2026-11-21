@@ -34,7 +34,7 @@
         </div>
         <div>
           <h1 class="text-base sm:text-lg font-bold text-slate-900 leading-tight">自動排班神器</h1>
-          <p class="text-xs text-slate-500">A / M / B / G 各 1 人 · 24H (08:00-隔日08:00) · 休假前空班最高權重</p>
+          <p class="text-xs text-slate-500">A / M / B / G 各 1 人 · 班務絕對平均 · 休假前不排班 · 班別不重複</p>
         </div>
       </div>
 
@@ -152,7 +152,7 @@
         <i data-lucide="sparkles" class="w-5 h-5"></i>
         <span>一鍵生成本月班表</span>
       </button>
-      <p class="text-[11px] text-slate-400 mt-1.5 text-center">100% 滿班保證 ＋ 休假前空班最高權重 ＋ 總班數高低差拉平 ＋ B 班（外宿）全體優先均分</p>
+      <p class="text-[11px] text-slate-400 mt-1.5 text-center">100% 滿班保證 ＋ 每人總班數／各班別絕對平均 ＋ 休假前不排班最高權重 ＋ 班務盡量不重複</p>
     </section>
 
     <!-- STEP 4: GENERATED SCHEDULE OUTPUT -->
@@ -785,10 +785,11 @@
 
       // =========================================================================
       // CORE SMART SCHEDULER ENGINE
-      // Tier 0: 100% Full Shifts (A/M/B/G) + No Consecutive 24H (with B-rest fallback)
-      // Tier 1: Pre-Leave Empty Day (Highest Rule Priority + Forced De-PreLeave Pass)
-      // Tier 2: Total Shift Peak-Shaving & Spread Equalization + B-Shift Equalization
-      //         + Red-Day Equalization + No Repeat Role (Relaxed for <=2 Roles)
+      // Tier 0: 100% Full Shifts (A/M/B/G) per day
+      // Tier 1: Pre-Leave Empty Day (Highest Rule Priority; if <4 avail, prefer A > M > B > G)
+      // Tier 2: Strict Total Shift Equalization (Equal across active staff + adj)
+      // Tier 3: Per-Role (A/M/B/G) Equalization + Avoid Consecutive Same Role + Avoid Reverse Shift
+      // Note: Consecutive workdays (連班) are allowed without overwork penalty per user rule.
       // =========================================================================
       function runSmartScheduler() {
         const y = state.year;
@@ -819,15 +820,21 @@
           }
         }
 
-        for (let d = 1; d <= days; d++) {
-          for (let i = 0; i < N; i++) {
+        // Pre-compute pre-leave flags and the length of the contiguous available window before each day d
+        const preLeaveWindowLen = Array.from({ length: N }, () => Array(days + 2).fill(0));
+        for (let i = 0; i < N; i++) {
+          let streakAvail = 0;
+          for (let d = 1; d <= days; d++) {
             if (!isTrain[i][d] && !isOff[i][d]) {
+              streakAvail++;
               isPreLeave[i][d] = isPreLeaveDay(staffList[i].id, y, m, d, leavesMap);
+              preLeaveWindowLen[i][d] = streakAvail;
+            } else {
+              streakAvail = 0;
             }
           }
         }
 
-        // Proportional Fair Targets
         const availDays = staffList.map((s, i) => {
           let cnt = 0;
           for (let d = 1; d <= days; d++) if (!isTrain[i][d] && !isOff[i][d]) cnt++;
@@ -835,376 +842,106 @@
         });
 
         const totalRequiredShifts = days * 4;
-        const totalAvailDays = availDays.reduce((a, b) => a + b, 0) || 1;
+
+        // Equal target total shifts across all active staff (capped only if availDays < equal share)
+        const baseTarget = Array(N).fill(0);
+        let remShifts = totalRequiredShifts;
+        let pool = [];
+        for (let i = 0; i < N; i++) if (availDays[i] > 0) pool.push(i);
+
+        while (pool.length > 0) {
+          const avg = remShifts / pool.length;
+          const capped = pool.filter(i => availDays[i] < avg);
+          if (capped.length === 0) {
+            pool.forEach(i => { baseTarget[i] = avg; });
+            break;
+          }
+          capped.forEach(i => {
+            baseTarget[i] = availDays[i];
+            remShifts -= availDays[i];
+          });
+          pool = pool.filter(i => availDays[i] >= avg);
+        }
+
         const targetTotal = staffList.map((s, i) => {
           if (availDays[i] === 0) return 0;
-          return Math.max(0, (totalRequiredShifts * (availDays[i] / totalAvailDays)) + (s.adj || 0));
+          return Math.max(0, baseTarget[i] + (s.adj || 0));
         });
 
-        const bQualAvailSum = staffList.reduce((acc, s, i) => acc + (s.roles.includes('B') ? availDays[i] : 0), 0) || 1;
-        const targetB = staffList.map((s, i) => {
-          if (!s.roles.includes('B') || availDays[i] === 0) return 0;
-          return days * (availDays[i] / bQualAvailSum);
+        // Equal target for B-shift (外宿) across ALL B-eligible active staff first,
+        // then compute each person's fair target for remaining roles (e.g. B+G-only staff absorb remaining quota in G).
+        const bElig = [];
+        for (let i = 0; i < N; i++) {
+          if (availDays[i] > 0 && staffList[i].roles.includes('B')) bElig.push(i);
+        }
+        const targetBVal = bElig.length ? (days / bElig.length) : 0;
+
+        const targetRolePerStaff = staffList.map((s, i) => {
+          const map = { A: 0, M: 0, B: 0, G: 0 };
+          if (availDays[i] === 0) return map;
+          if (s.roles.includes('B')) map.B = targetBVal;
+          return map;
+        });
+
+        // Distribute A, M, G among eligible staff respecting each person's remaining quota
+        ['A', 'M', 'G'].forEach(r => {
+          const elig = [];
+          for (let i = 0; i < N; i++) {
+            if (availDays[i] > 0 && staffList[i].roles.includes(r)) elig.push(i);
+          }
+          if (!elig.length) return;
+          if (r === 'G') {
+            // Staff whose ONLY non-B role is G (e.g. ['B','G']) take their remaining total quota in G
+            let remG = days;
+            const flexElig = [];
+            elig.forEach(i => {
+              const nonBRoles = staffList[i].roles.filter(x => x !== 'B');
+              if (nonBRoles.length === 1 && nonBRoles[0] === 'G') {
+                const gNeed = Math.max(0, targetTotal[i] - targetRolePerStaff[i].B);
+                targetRolePerStaff[i].G = gNeed;
+                remG -= gNeed;
+              } else {
+                flexElig.push(i);
+              }
+            });
+            const avgFlexG = flexElig.length ? Math.max(0, remG / flexElig.length) : 0;
+            flexElig.forEach(i => { targetRolePerStaff[i].G = avgFlexG; });
+          } else {
+            const avgR = days / elig.length;
+            elig.forEach(i => { targetRolePerStaff[i][r] = avgR; });
+          }
         });
 
         let totalRedDays = 0;
         for (let d = 1; d <= days; d++) if (isRed[d]) totalRedDays++;
-        const targetRed = staffList.map((s, i) => {
-          if (availDays[i] === 0) return 0;
-          return (totalRedDays * 4) * (availDays[i] / totalAvailDays);
-        });
+        const activeCount = availDays.filter(c => c > 0).length || 1;
+        const targetRed = staffList.map((s, i) => (availDays[i] > 0 ? (totalRedDays * 4) / activeCount : 0));
 
-        function canWork(i, d, role, grid, allowConsecutive = false) {
+        function canWork(i, d, role, grid) {
           if (isTrain[i][d] || isOff[i][d]) return false;
           if (!staffList[i].roles.includes(role)) return false;
           if (grid[i][d] !== '') return false;
-          if (!allowConsecutive) {
-            if (d > 1 && ROLES.includes(grid[i][d - 1])) return false;
-            if (d < days && ROLES.includes(grid[i][d + 1])) return false;
-          }
           return true;
         }
 
-        function isFreeOnDay(i, d, grid) {
-          if (isTrain[i][d] || isOff[i][d]) return false;
-          if (grid[i][d] !== '') return false;
-          if (d > 1 && ROLES.includes(grid[i][d - 1])) return false;
-          if (d < days && ROLES.includes(grid[i][d + 1])) return false;
-          return true;
-        }
+        const preLeaveWeight = { A: 600, M: 900, B: 2500, G: 4000 };
+        const roleOrderVal = { A: 1, M: 2, B: 3, G: 4 };
 
-        // BFS Multi-Day Augmenting Path Matching (up to 4 moves across roles & adjacent days)
-        function findAugmentingPathAndApply(startDay, startRole, grid, scorerFn) {
-          const queue = [{ day: startDay, role: startRole, moves: [], usedSlots: new Set([`${startDay}:${startRole}`]) }];
-          let bestPath = null;
-          let bestPathScore = Infinity;
-
-          while (queue.length > 0) {
-            const cur = queue.shift();
-            if (cur.moves.length >= 4) continue;
-
-            const getCell = (p, d) => {
-              for (let mIdx = cur.moves.length - 1; mIdx >= 0; mIdx--) {
-                const mv = cur.moves[mIdx];
-                if (mv.person === p && mv.toDay === d) return mv.toRole;
-                if (mv.person === p && mv.fromDay === d) return '';
-              }
-              return grid[p][d];
-            };
-
-            const isTempFree = (p, d) => {
-              if (isTrain[p][d] || isOff[p][d]) return false;
-              if (getCell(p, d) !== '') return false;
-              if (d > 1 && ROLES.includes(getCell(p, d - 1))) return false;
-              if (d < days && ROLES.includes(getCell(p, d + 1))) return false;
-              return true;
-            };
-
-            // Option A: Direct free candidate
-            for (let p = 0; p < N; p++) {
-              if (!staffList[p].roles.includes(cur.role)) continue;
-              if (isTempFree(p, cur.day)) {
-                const finalMoves = [...cur.moves, { person: p, toDay: cur.day, toRole: cur.role, fromDay: 0, fromRole: '' }];
-                let totalScore = finalMoves.length * 25;
-                finalMoves.forEach(mv => { totalScore += scorerFn(mv.person, mv.toDay, mv.toRole, grid); });
-                if (totalScore < bestPathScore) {
-                  bestPathScore = totalScore;
-                  bestPath = finalMoves;
-                }
-              }
-            }
-
-            if (bestPath && cur.moves.length >= 2) continue;
-
-            // Option B: Same-day role rotation
-            for (let p = 0; p < N; p++) {
-              if (!staffList[p].roles.includes(cur.role)) continue;
-              const heldRole = getCell(p, cur.day);
-              if (!ROLES.includes(heldRole) || heldRole === cur.role) continue;
-              const slotKey = `${cur.day}:${heldRole}`;
-              if (cur.usedSlots.has(slotKey)) continue;
-
-              const nextUsed = new Set(cur.usedSlots);
-              nextUsed.add(slotKey);
-              queue.push({
-                day: cur.day,
-                role: heldRole,
-                moves: [...cur.moves, { person: p, toDay: cur.day, toRole: cur.role, fromDay: cur.day, fromRole: heldRole }],
-                usedSlots: nextUsed
-              });
-            }
-
-            // Option C: Adjacent-day unblock
-            for (const adjD of [cur.day - 1, cur.day + 1]) {
-              if (adjD < 1 || adjD > days) continue;
-              for (let p = 0; p < N; p++) {
-                if (isTrain[p][cur.day] || isOff[p][cur.day]) continue;
-                if (!staffList[p].roles.includes(cur.role)) continue;
-                if (getCell(p, cur.day) !== '') continue;
-                const heldAdjRole = getCell(p, adjD);
-                if (!ROLES.includes(heldAdjRole)) continue;
-                const otherAdj = adjD === cur.day - 1 ? cur.day + 1 : cur.day - 1;
-                if (otherAdj >= 1 && otherAdj <= days && ROLES.includes(getCell(p, otherAdj))) continue;
-
-                const slotKey = `${adjD}:${heldAdjRole}`;
-                if (cur.usedSlots.has(slotKey)) continue;
-
-                const nextUsed = new Set(cur.usedSlots);
-                nextUsed.add(slotKey);
-                queue.push({
-                  day: adjD,
-                  role: heldAdjRole,
-                  moves: [...cur.moves, { person: p, toDay: cur.day, toRole: cur.role, fromDay: adjD, fromRole: heldAdjRole }],
-                  usedSlots: nextUsed
-                });
-              }
-            }
-          }
-
-          if (bestPath) {
-            for (let idx = bestPath.length - 1; idx >= 0; idx--) {
-              const mv = bestPath[idx];
-              if (mv.fromDay > 0) grid[mv.person][mv.fromDay] = '';
-              grid[mv.person][mv.toDay] = mv.toRole;
-            }
-            return true;
-          }
-          return false;
-        }
-
-        // Guaranteed Full-Shift Fallback (prefer prior-night B-shift overnight off if consecutive is unavoidable)
-        function forceFillWithFallback(d, role, grid, scorerFn) {
-          const fallbackCands = [];
-          for (let i = 0; i < N; i++) {
-            if (canWork(i, d, role, grid, true)) {
-              const prevRole = d > 1 ? grid[i][d - 1] : '';
-              const nextRole = d < days ? grid[i][d + 1] : '';
-              const isConsec = ROLES.includes(prevRole) || ROLES.includes(nextRole);
-              const bRestBonus = (prevRole === 'B') ? -40 : 0;
-              const consecPen = isConsec ? 500000 : 0;
-              fallbackCands.push({ i, score: consecPen + bRestBonus + scorerFn(i, d, role, grid) });
-            }
-          }
-          if (fallbackCands.length > 0) {
-            fallbackCands.sort((a, b) => a.score - b.score);
-            grid[fallbackCands[0].i][d] = role;
-            return true;
-          }
-
-          for (let k = 0; k < N; k++) {
-            const roleK = grid[k][d];
-            if (!ROLES.includes(roleK) || !staffList[k].roles.includes(role)) continue;
-            for (let j = 0; j < N; j++) {
-              if (j === k) continue;
-              if (canWork(j, d, roleK, grid, true)) {
-                grid[j][d] = roleK;
-                grid[k][d] = role;
-                return true;
-              }
-            }
-          }
-          return false;
-        }
-
-        function fillAllMissingHoles(grid, scorerFn) {
-          for (let pass = 0; pass < 4; pass++) {
-            let anyMissing = false;
-            for (let d = 1; d <= days; d++) {
-              const present = new Set();
-              for (let i = 0; i < N; i++) {
-                if (ROLES.includes(grid[i][d])) present.add(grid[i][d]);
-              }
-              for (const role of ROLES) {
-                if (!present.has(role)) {
-                  anyMissing = true;
-                  if (!findAugmentingPathAndApply(d, role, grid, scorerFn)) {
-                    forceFillWithFallback(d, role, grid, scorerFn);
-                  }
-                }
-              }
-            }
-            if (!anyMissing) break;
-          }
-        }
-
-        // Forced De-PreLeave Pass (Tier 1 Highest Rule Priority)
-        function eliminatePreLeaveShifts(grid) {
-          let improved = true;
-          let guard = 0;
-          while (improved && guard < 40) {
-            improved = false;
-            guard++;
-            for (let d = 1; d <= days; d++) {
-              for (let i = 0; i < N; i++) {
-                const role = grid[i][d];
-                if (!ROLES.includes(role) || !isPreLeave[i][d]) continue;
-
-                // 1) Direct replacement by non-pre-leave free person
-                let bestJ = -1;
-                let bestScore = Infinity;
-                for (let j = 0; j < N; j++) {
-                  if (j === i || isPreLeave[j][d]) continue;
-                  if (canWork(j, d, role, grid, false)) {
-                    let cntJ = 0;
-                    for (let x = 1; x <= days; x++) if (ROLES.includes(grid[j][x])) cntJ++;
-                    const diff = cntJ - targetTotal[j];
-                    if (diff < bestScore) { bestScore = diff; bestJ = j; }
-                  }
-                }
-                if (bestJ !== -1) {
-                  grid[bestJ][d] = role;
-                  grid[i][d] = '';
-                  improved = true;
-                  continue;
-                }
-
-                // 2) Same-day role rotation
-                let rotated = false;
-                for (let k = 0; k < N && !rotated; k++) {
-                  if (k === i || isPreLeave[k][d]) continue;
-                  const roleK = grid[k][d];
-                  if (!ROLES.includes(roleK) || !staffList[k].roles.includes(role)) continue;
-                  for (let j = 0; j < N && !rotated; j++) {
-                    if (j === i || j === k || isPreLeave[j][d]) continue;
-                    if (canWork(j, d, roleK, grid, false)) {
-                      grid[j][d] = roleK;
-                      grid[k][d] = role;
-                      grid[i][d] = '';
-                      improved = true;
-                      rotated = true;
-                    }
-                  }
-                }
-                if (rotated) continue;
-
-                // 3) Neighbor-day unblock
-                for (const adjD of [d - 1, d + 1]) {
-                  if (adjD < 1 || adjD > days) continue;
-                  for (let j = 0; j < N; j++) {
-                    if (j === i || isPreLeave[j][d]) continue;
-                    if (isTrain[j][d] || isOff[j][d] || grid[j][d] !== '') continue;
-                    if (!staffList[j].roles.includes(role)) continue;
-                    const adjRole = grid[j][adjD];
-                    if (!ROLES.includes(adjRole)) continue;
-                    const otherAdj = adjD === d - 1 ? d + 1 : d - 1;
-                    if (otherAdj >= 1 && otherAdj <= days && ROLES.includes(grid[j][otherAdj])) continue;
-
-                    let bestM = -1;
-                    let bestMScore = Infinity;
-                    for (let m = 0; m < N; m++) {
-                      if (m === j || m === i || isPreLeave[m][adjD]) continue;
-                      if (canWork(m, adjD, adjRole, grid, false)) {
-                        let cntM = 0;
-                        for (let x = 1; x <= days; x++) if (ROLES.includes(grid[m][x])) cntM++;
-                        if (cntM - targetTotal[m] < bestMScore) { bestMScore = cntM - targetTotal[m]; bestM = m; }
-                      }
-                    }
-                    if (bestM !== -1) {
-                      grid[bestM][adjD] = adjRole;
-                      grid[j][adjD] = '';
-                      grid[j][d] = role;
-                      grid[i][d] = '';
-                      improved = true;
-                      break;
-                    }
-                  }
-                  if (improved) break;
-                }
-              }
-            }
-          }
-
-          // If pre-leave staff MUST work on day d, prefer giving them B-shift (overnight off)
-          for (let d = 1; d <= days; d++) {
-            for (let i = 0; i < N; i++) {
-              const ri = grid[i][d];
-              if (!ROLES.includes(ri) || ri === 'B' || !isPreLeave[i][d]) continue;
-              if (!staffList[i].roles.includes('B')) continue;
-              for (let j = 0; j < N; j++) {
-                if (j === i || isPreLeave[j][d]) continue;
-                if (grid[j][d] === 'B' && staffList[j].roles.includes(ri)) {
-                  grid[i][d] = 'B';
-                  grid[j][d] = ri;
-                  break;
-                }
-              }
-            }
-          }
-        }
-
-        // Peak-Shaving & Valley-Filling Load Equalization Pass (Total Shifts)
-        function equalizeTotalShiftsPass(grid) {
-          for (let round = 0; round < 25; round++) {
-            const counts = Array(N).fill(0);
-            for (let i = 0; i < N; i++) {
-              for (let d = 1; d <= days; d++) {
-                if (ROLES.includes(grid[i][d])) counts[i]++;
-              }
-            }
-
-            const ranking = [];
-            for (let i = 0; i < N; i++) {
-              if (availDays[i] > 0) ranking.push({ i, excess: counts[i] - targetTotal[i] });
-            }
-            ranking.sort((a, b) => b.excess - a.excess);
-
-            let moved = false;
-            for (let hi = 0; hi < ranking.length && !moved; hi++) {
-              const donor = ranking[hi].i;
-              if (ranking[hi].excess <= 0.35) break;
-
-              for (let lo = ranking.length - 1; lo > hi && !moved; lo--) {
-                const receiver = ranking[lo].i;
-                if (ranking[lo].excess >= -0.35) break;
-                if ((ranking[hi].excess - ranking[lo].excess) < 1.1) continue;
-
-                for (let d = 1; d <= days && !moved; d++) {
-                  const roleD = grid[donor][d];
-                  if (!ROLES.includes(roleD)) continue;
-                  if (!isPreLeave[donor][d] && isPreLeave[receiver][d]) continue;
-
-                  // Direct transfer
-                  if (canWork(receiver, d, roleD, grid, false)) {
-                    grid[donor][d] = '';
-                    grid[receiver][d] = roleD;
-                    moved = true;
-                    break;
-                  }
-
-                  // Same-day role rotation via mediator k
-                  if (isFreeOnDay(receiver, d, grid)) {
-                    for (let k = 0; k < N && !moved; k++) {
-                      if (k === donor || k === receiver) continue;
-                      const roleK = grid[k][d];
-                      if (!ROLES.includes(roleK) || roleK === roleD) continue;
-                      if (staffList[receiver].roles.includes(roleK) && staffList[k].roles.includes(roleD)) {
-                        grid[donor][d] = '';
-                        grid[k][d] = roleD;
-                        grid[receiver][d] = roleK;
-                        moved = true;
-                      }
-                    }
-                  }
-                }
-              }
-            }
-            if (!moved) break;
-          }
-        }
-
-        // Strict Lexicographical Cost Evaluation
         function evaluateGrid(grid) {
           let missingShifts = 0;
-          let consecShifts = 0;
-          let preLeaveShifts = 0;
-          let preLeaveNonB = 0;
+          let preLeaveCount = 0;
+          let preLeaveWeighted = 0;
           let totalDeviation = 0;
           let maxExcess = -Infinity;
           let minExcess = Infinity;
           let bDeviation = 0;
+          let maxB = -Infinity;
+          let minB = Infinity;
+          let roleDeviation = 0;
           let redDeviation = 0;
           let repeatSameRole = 0;
-          let roleBalancePenalty = 0;
+          let adjRepeatRole = 0;
+          let reversePenalty = 0;
 
           for (let d = 1; d <= days; d++) {
             const roleCounts = { A: 0, M: 0, B: 0, G: 0 };
@@ -1230,14 +967,28 @@
                 cntRole[r]++;
                 if (isRed[d]) cntRed++;
                 if (isPreLeave[i][d]) {
-                  preLeaveShifts++;
-                  if (r !== 'B') preLeaveNonB++;
+                  preLeaveCount++;
+                  // Count how many shifts person i actually worked in this contiguous available window before day d
+                  let shiftsBeforeInWindow = 0;
+                  for (let bd = d - 1; bd >= 1; bd--) {
+                    if (isTrain[i][bd] || isOff[i][bd]) break;
+                    if (ROLES.includes(grid[i][bd])) shiftsBeforeInWindow++;
+                  }
+                  const winLen = preLeaveWindowLen[i][d] || 1;
+                  // Bi-weekly / long-stretch staff get much higher protection than short-window consecutive-leave staff
+                  const stretchFactor = shiftsBeforeInWindow * 1200 + winLen * 300;
+                  preLeaveWeighted += (preLeaveWeight[r] || 1000) + stretchFactor;
                 }
-                if (d > 1 && ROLES.includes(grid[i][d - 1])) consecShifts++;
-
-                // Avoid consecutive identical role ONLY when staff has >= 3 roles
-                if (staffList[i].roles.length >= 3 && lastRole === r) {
+                if (d > 1 && grid[i][d - 1] === r) {
+                  adjRepeatRole++;
+                }
+                if (lastRole === r) {
                   repeatSameRole++;
+                }
+                if (d > 1 && ROLES.includes(grid[i][d - 1])) {
+                  const prevV = roleOrderVal[grid[i][d - 1]];
+                  const curV = roleOrderVal[r];
+                  if (curV < prevV) reversePenalty += (prevV - curV);
                 }
                 lastRole = r;
               }
@@ -1253,59 +1004,43 @@
               redDeviation += rDiff * rDiff;
 
               if (staffList[i].roles.includes('B')) {
-                const bDiff = cntRole.B - targetB[i];
-                bDeviation += bDiff * bDiff;
+                const bd = cntRole.B - targetRolePerStaff[i].B;
+                bDeviation += bd * bd;
+                if (cntRole.B > maxB) maxB = cntRole.B;
+                if (cntRole.B < minB) minB = cntRole.B;
               }
-
-              if (staffList[i].roles.length >= 3) {
-                const nonBRoles = staffList[i].roles.filter(r => r !== 'B');
-                const nonBTotal = nonBRoles.reduce((acc, r) => acc + cntRole[r], 0);
-                const idealEach = nonBRoles.length ? nonBTotal / nonBRoles.length : 0;
-                nonBRoles.forEach(r => {
-                  const dRole = cntRole[r] - idealEach;
-                  roleBalancePenalty += dRole * dRole;
-                });
-              }
+              staffList[i].roles.forEach(r => {
+                if (r === 'B') return;
+                const rd = cntRole[r] - targetRolePerStaff[i][r];
+                roleDeviation += rd * rd;
+              });
             }
           }
 
           const totalSpread = (maxExcess > -Infinity && minExcess < Infinity)
             ? Math.max(0, maxExcess - minExcess)
             : 0;
+          const spreadOver1 = Math.max(0, totalSpread - 1);
+          const bSpread = (maxB > -Infinity && minB < Infinity) ? Math.max(0, maxB - minB) : 0;
+          const bSpreadOver1 = Math.max(0, bSpread - 1);
 
           return (
             missingShifts * 100000000 +
-            consecShifts * 5000000 +
-            preLeaveShifts * 800000 +
-            preLeaveNonB * 1500 +
-            totalDeviation * 2800 +
-            (totalSpread * totalSpread) * 2200 +
-            bDeviation * 420 +
-            redDeviation * 240 +
-            repeatSameRole * 120 +
-            roleBalancePenalty * 40
+            spreadOver1 * 500000 +
+            bSpreadOver1 * 180000 +
+            totalDeviation * 12000 +
+            preLeaveCount * 4000 +
+            preLeaveWeighted * 10 +
+            bDeviation * 3500 +
+            roleDeviation * 700 +
+            adjRepeatRole * 450 +
+            repeatSameRole * 250 +
+            redDeviation * 120 +
+            reversePenalty * 40
           );
         }
 
-        // MRV Day Ordering
-        const dayDifficulty = [];
-        for (let d = 1; d <= days; d++) {
-          let totalAvail = 0;
-          let nonPreCount = 0;
-          for (let i = 0; i < N; i++) {
-            if (!isTrain[i][d] && !isOff[i][d]) {
-              totalAvail++;
-              if (!isPreLeave[i][d]) nonPreCount++;
-            }
-          }
-          dayDifficulty.push({ d, difficulty: totalAvail * 2 + nonPreCount });
-        }
-
-        let bestGrid = null;
-        let bestCost = Infinity;
-        const ITERATIONS = 130;
-
-        for (let iter = 0; iter < ITERATIONS; iter++) {
+        function buildInitialGrid() {
           const grid = Array.from({ length: N }, (_, i) => {
             const row = Array(days + 2).fill('');
             for (let d = 1; d <= days; d++) {
@@ -1315,105 +1050,109 @@
             return row;
           });
 
-          const orderedDays = dayDifficulty
-            .map(item => ({ d: item.d, key: item.difficulty + (Math.random() * 1.8 - 0.9) }))
-            .sort((a, b) => a.key - b.key)
-            .map(item => item.d);
-
-          const candidateScorer = (i, d, role, g) => {
-            let cntTotal = 0, cntB = 0, cntRed = 0;
-            for (let x = 1; x <= days; x++) {
-              const rx = g[i][x];
-              if (ROLES.includes(rx)) {
-                cntTotal++;
-                if (rx === 'B') cntB++;
-                if (isRed[x]) cntRed++;
-              }
+          for (let d = 1; d <= days; d++) {
+            const avail = [];
+            for (let i = 0; i < N; i++) {
+              if (!isTrain[i][d] && !isOff[i][d]) avail.push(i);
             }
-
-            const prePenalty = isPreLeave[i][d] ? 100000 : 0;
-            let lookaheadBonus = 0;
-            if (d < days && (isOff[i][d + 1] || isTrain[i][d + 1] || isPreLeave[i][d + 1])) lookaheadBonus -= 12;
-            if (d > 1 && (isOff[i][d - 1] || isTrain[i][d - 1] || isPreLeave[i][d - 1])) lookaheadBonus -= 8;
-
-            const scarcityBonus = (staffList[i].roles.length <= 2 && role !== 'B') ? -10 : 0;
-            const totalDeficit = (cntTotal - targetTotal[i]) * 24;
-            const bDeficit = role === 'B' ? (cntB - targetB[i]) * 26 : 0;
-            const redDeficit = isRed[d] ? (cntRed - targetRed[i]) * 14 : 0;
-
-            let repeatPen = 0;
-            if (staffList[i].roles.length >= 3) {
-              for (let pd = d - 1; pd >= 1; pd--) {
-                if (ROLES.includes(g[i][pd])) { if (g[i][pd] === role) repeatPen += 15; break; }
-              }
-              for (let nd = d + 1; nd <= days; nd++) {
-                if (ROLES.includes(g[i][nd])) { if (g[i][nd] === role) repeatPen += 15; break; }
-              }
-            }
-
-            return prePenalty + totalDeficit + bDeficit + redDeficit + repeatPen + lookaheadBonus + scarcityBonus + (Math.random() * 6);
-          };
-
-          for (const d of orderedDays) {
-            const roleOrder = ROLES.slice().sort((r1, r2) => {
-              const q1 = staffList.filter((s, i) => s.roles.includes(r1) && isFreeOnDay(i, d, grid)).length;
-              const q2 = staffList.filter((s, i) => s.roles.includes(r2) && isFreeOnDay(i, d, grid)).length;
-              if (q1 !== q2) return q1 - q2;
-              if (r1 === 'B') return -1;
-              if (r2 === 'B') return 1;
-              return Math.random() - 0.5;
+            // Sort roles by fewest eligible candidates first
+            const rolesSorted = ROLES.slice().sort((r1, r2) => {
+              const c1 = avail.filter(i => staffList[i].roles.includes(r1)).length;
+              const c2 = avail.filter(i => staffList[i].roles.includes(r2)).length;
+              return c1 - c2;
             });
 
-            for (const role of roleOrder) {
-              if (!findAugmentingPathAndApply(d, role, grid, candidateScorer)) {
-                forceFillWithFallback(d, role, grid, candidateScorer);
+            const usedToday = new Set();
+            for (const role of rolesSorted) {
+              const cands = avail.filter(i => !usedToday.has(i) && staffList[i].roles.includes(role));
+              if (cands.length > 0) {
+                // Prefer non-pre-leave first
+                cands.sort((a, b) => {
+                  const pa = isPreLeave[a][d] ? 1 : 0;
+                  const pb = isPreLeave[b][d] ? 1 : 0;
+                  if (pa !== pb) return pa - pb;
+                  return Math.random() - 0.5;
+                });
+                const chosen = cands[0];
+                grid[chosen][d] = role;
+                usedToday.add(chosen);
               }
             }
           }
+          return grid;
+        }
 
-          fillAllMissingHoles(grid, candidateScorer);
-          eliminatePreLeaveShifts(grid);
-          fillAllMissingHoles(grid, candidateScorer);
-          equalizeTotalShiftsPass(grid);
+        // Simulated Annealing + Hill Climbing across multiple restarts
+        let bestGrid = null;
+        let bestCost = Infinity;
+        const RESTARTS = 6;
+        const STEPS = 18000;
 
-          // Local Swap Optimization
+        for (let rIdx = 0; rIdx < RESTARTS; rIdx++) {
+          const grid = buildInitialGrid();
           let curCost = evaluateGrid(grid);
-          for (let step = 0; step < 420; step++) {
+          let temp = 1800;
+
+          for (let step = 0; step < STEPS; step++) {
             const d = 1 + Math.floor(Math.random() * days);
-            const i = Math.floor(Math.random() * N);
-            const j = Math.floor(Math.random() * N);
-            if (i === j) continue;
+            const moveType = Math.random();
 
-            const ri = grid[i][d];
-            const rj = grid[j][d];
+            if (moveType < 0.5) {
+              // Swap two assigned shifts on day d
+              const assigned = [];
+              for (let i = 0; i < N; i++) if (ROLES.includes(grid[i][d])) assigned.push(i);
+              if (assigned.length < 2) continue;
+              const i = assigned[Math.floor(Math.random() * assigned.length)];
+              const j = assigned[Math.floor(Math.random() * assigned.length)];
+              if (i === j) continue;
+              const ri = grid[i][d], rj = grid[j][d];
+              if (!staffList[i].roles.includes(rj) || !staffList[j].roles.includes(ri)) continue;
 
-            if (ROLES.includes(ri) && ROLES.includes(rj) && ri !== rj) {
-              if (staffList[i].roles.includes(rj) && staffList[j].roles.includes(ri)) {
-                grid[i][d] = rj;
-                grid[j][d] = ri;
-                const newCost = evaluateGrid(grid);
-                if (newCost <= curCost) curCost = newCost;
-                else { grid[i][d] = ri; grid[j][d] = rj; }
-              }
-            } else if (ROLES.includes(ri) && rj === '') {
-              if (!isPreLeave[i][d] && isPreLeave[j][d]) continue;
-              grid[i][d] = '';
-              if (canWork(j, d, ri, grid, false)) {
-                grid[j][d] = ri;
-                const newCost = evaluateGrid(grid);
-                if (newCost <= curCost) curCost = newCost;
-                else { grid[j][d] = ''; grid[i][d] = ri; }
+              grid[i][d] = rj;
+              grid[j][d] = ri;
+              const newCost = evaluateGrid(grid);
+              const delta = newCost - curCost;
+              if (delta <= 0 || Math.random() < Math.exp(-delta / Math.max(temp, 0.5))) {
+                curCost = newCost;
+                if (curCost < bestCost) {
+                  bestCost = curCost;
+                  bestGrid = grid.map(row => row.slice());
+                }
               } else {
                 grid[i][d] = ri;
+                grid[j][d] = rj;
+              }
+            } else {
+              // Move an assigned shift on day d to an idle available person on day d
+              const assigned = [];
+              const idle = [];
+              for (let i = 0; i < N; i++) {
+                if (ROLES.includes(grid[i][d])) assigned.push(i);
+                else if (!isTrain[i][d] && !isOff[i][d] && grid[i][d] === '') idle.push(i);
+              }
+              if (assigned.length === 0 || idle.length === 0) continue;
+              const i = assigned[Math.floor(Math.random() * assigned.length)];
+              const role = grid[i][d];
+              const eligibleIdle = idle.filter(j => staffList[j].roles.includes(role));
+              if (eligibleIdle.length === 0) continue;
+              const j = eligibleIdle[Math.floor(Math.random() * eligibleIdle.length)];
+
+              grid[i][d] = '';
+              grid[j][d] = role;
+              const newCost = evaluateGrid(grid);
+              const delta = newCost - curCost;
+              if (delta <= 0 || Math.random() < Math.exp(-delta / Math.max(temp, 0.5))) {
+                curCost = newCost;
+                if (curCost < bestCost) {
+                  bestCost = curCost;
+                  bestGrid = grid.map(row => row.slice());
+                }
+              } else {
+                grid[j][d] = '';
+                grid[i][d] = role;
               }
             }
-          }
-
-          equalizeTotalShiftsPass(grid);
-          const finalCost = evaluateGrid(grid);
-          if (finalCost < bestCost) {
-            bestCost = finalCost;
-            bestGrid = grid;
+            temp *= 0.9996;
           }
         }
 
@@ -1706,17 +1445,17 @@
         document.getElementById('schedule-tfoot').innerHTML = tfHtml;
 
         const banner = document.getElementById('schedule-alert-banner');
-        if (invalidDays > 0 || consecWarnings > 0) {
-          banner.className = 'rounded-xl border border-amber-300 bg-amber-50 text-amber-900 px-3.5 py-2.5 text-xs';
-          banner.innerHTML = `⚠️ <strong>檢核提醒：</strong>目前有 ${invalidDays} 天未滿「A/M/B/G 各 1 人」或有 ${consecWarnings} 處連續 24H 標記（紅框，人力緊縮保底已優先安排前晚 B 班外宿者），可點擊儲存格微調或重新洗牌。`;
+        if (invalidDays > 0) {
+          banner.className = 'rounded-xl border border-rose-300 bg-rose-50 text-rose-900 px-3.5 py-2.5 text-xs';
+          banner.innerHTML = `⚠️ <strong>檢核提醒：</strong>目前有 ${invalidDays} 天未滿「A/M/B/G 各 1 人」，可點擊儲存格微調或重新洗牌。`;
           banner.classList.remove('hidden');
         } else if (preLeaveShiftTotal > 0) {
           banner.className = 'rounded-xl border border-amber-200 bg-amber-50/70 text-amber-900 px-3.5 py-2.5 text-xs';
-          banner.innerHTML = `ℹ️ <strong>已達最高優先休假前空班最佳化：</strong>全月每日滿班且零連班，僅 ${preLeaveShiftTotal} 班因當日全組連休／受訓導致非休前可用人力不足 4 人而排入休假前一日（琥珀框標示）。`;
+          banner.innerHTML = `ℹ️ <strong>已達最佳化班表：</strong>全月每日滿班且班務平均分配；僅 ${preLeaveShiftTotal} 班因當日非休前可用人力不足 4 人而排入休假前一日（琥珀框標示，已優先安排早／中班）。`;
           banner.classList.remove('hidden');
         } else {
           banner.className = 'rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-3.5 py-2.5 text-xs';
-          banner.innerHTML = `✅ <strong>完美班表達成：</strong>全月每日皆滿「A / M / B / G 各 1 人」、零連續 24H 勤務，且 <strong>100% 保留所有人員休假前一日空班（休前班 = 0）</strong>！`;
+          banner.innerHTML = `✅ <strong>完美班表達成：</strong>全月每日皆滿「A / M / B / G 各 1 人」、班務絕對平均，且 <strong>100% 保留所有人員休假前一日空班（休前班 = 0）</strong>！`;
           banner.classList.remove('hidden');
         }
       }
